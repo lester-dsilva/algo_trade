@@ -1,0 +1,21 @@
+{
+  "name": "stocks-analysis",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "load": "node scripts/loadCsv.js",
+    "ema": "node scripts/ema.js",
+    "momentum": "node scripts/momentum.js",
+    "analyze": "node scripts/analyze.js",
+    "entries": "node scripts/findEntries.js",
+    "kite:login": "node scripts/kiteLogin.js",
+    "kite:session": "node scripts/kiteSession.js",
+    "kite:history": "node scripts/kiteHistorical.js",
+    "kite:ohlc": "node scripts/kiteOHLC.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "kiteconnect": "^5.1.0"
+  }
+}
