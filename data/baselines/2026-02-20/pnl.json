@@ -1,0 +1,99 @@
+{
+  "date": "2026-02-20",
+  "runAt": "2026-02-21T06:34:48.597Z",
+  "totalPnl": 1558.84,
+  "totalCapitalDeployed": 202803.30000000002,
+  "counts": {
+    "total": 7,
+    "stop": 3,
+    "target": 0,
+    "eod": 4,
+    "noData": 0
+  },
+  "trades": [
+    {
+      "symbol": "ABB",
+      "date": "2026-02-20",
+      "time": "10:21:00",
+      "entry": 6059,
+      "stop": 5996.87,
+      "target": 6183.26,
+      "qty": 4,
+      "exitReason": "stop",
+      "exitPrice": 6151.33,
+      "pnl": 369.32
+    },
+    {
+      "symbol": "STANLEY",
+      "date": "2026-02-20",
+      "time": "11:48:00",
+      "entry": 177.5,
+      "stop": 174.53,
+      "target": 183.44,
+      "qty": 169,
+      "exitReason": "stop",
+      "exitPrice": 174.53,
+      "pnl": -501.93
+    },
+    {
+      "symbol": "ABINFRA",
+      "date": "2026-02-20",
+      "time": "10:30:00",
+      "entry": 21.6,
+      "stop": 21.29,
+      "target": 22.22,
+      "qty": 1388,
+      "exitReason": "stop",
+      "exitPrice": 22.1,
+      "pnl": 694
+    },
+    {
+      "symbol": "BDL",
+      "date": "2026-02-20",
+      "time": "10:30:00",
+      "entry": 1317.2,
+      "stop": 1300.76,
+      "target": 1350.08,
+      "qty": 22,
+      "exitReason": "eod",
+      "exitPrice": 1308.5,
+      "pnl": -191.4
+    },
+    {
+      "symbol": "BALAJITELE",
+      "date": "2026-02-20",
+      "time": "10:33:00",
+      "entry": 98.5,
+      "stop": 97.12,
+      "target": 101.26,
+      "qty": 304,
+      "exitReason": "eod",
+      "exitPrice": 99.89,
+      "pnl": 422.56
+    },
+    {
+      "symbol": "AURUM",
+      "date": "2026-02-20",
+      "time": "10:42:00",
+      "entry": 185.2,
+      "stop": 180.26,
+      "target": 195.08,
+      "qty": 161,
+      "exitReason": "eod",
+      "exitPrice": 187.39,
+      "pnl": 352.59
+    },
+    {
+      "symbol": "YATHARTH",
+      "date": "2026-02-20",
+      "time": "11:12:00",
+      "entry": 710.7,
+      "stop": 694.66,
+      "target": 742.78,
+      "qty": 42,
+      "exitReason": "eod",
+      "exitPrice": 720.55,
+      "pnl": 413.7
+    }
+  ]
+}

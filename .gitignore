@@ -3,3 +3,8 @@ node_modules/
 .kite_session
 *.log
 .DS_Store
+
+# OHLC: only date folders data/YYYY-MM-DD/*.csv used; do not commit
+data/.tmp/
+data/*.csv
+data/*/*.csv

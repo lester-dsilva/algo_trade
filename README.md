@@ -99,6 +99,20 @@ node scripts/loadCsv.js data/bharatse.csv | node scripts/ema.js | node scripts/a
 
 `lib/kite.js` exports `getKite()` (authenticated client) and `generateSession()` for use in other scripts.
 
+## Live scanner and Telegram alerts
+
+The live scanner subscribes to symbols from **`config/nse_mcap_above_900cr.csv`** (one symbol per line, column `tradingsymbol`). Regenerate that list with `node scripts/buildWatchlistFromMcap.js` if needed (from NSE mcap data in `data/nse_mcap_lakhs.tsv`).
+
+**Run the live scanner:**
+```bash
+node scripts/liveScanner.js
+```
+It connects to Kite WebSocket, builds 3m candles from ticks, runs entry logic on each new bar, and writes paper positions to `data/positions.json`. Optionally run `node scripts/positionManager.js` to check stop/target vs LTP and close positions.
+
+**Telegram:** Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` to receive alerts for new entries and position updates. Create a bot via [@BotFather](https://t.me/BotFather); send a message to the bot, then call `https://api.telegram.org/bot<token>/getUpdates` to see your chat ID. If either is unset, the scanner runs without Telegram.
+
+**Positions are paper-only** unless `LIVE_TRADING=true` in `.env` (real order placement is not implemented yet).
+
 ## Next steps
 
 - Add more indicators (e.g. flag/consolidation detection, breakout detection).

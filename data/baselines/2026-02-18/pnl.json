@@ -1,0 +1,147 @@
+{
+  "date": "2026-02-18",
+  "runAt": "2026-02-21T06:42:31.103Z",
+  "totalPnl": 7873.4800000000005,
+  "totalCapitalDeployed": 313023.16000000003,
+  "counts": {
+    "total": 11,
+    "stop": 6,
+    "target": 0,
+    "eod": 5,
+    "noData": 0
+  },
+  "trades": [
+    {
+      "symbol": "GODFRYPHLP",
+      "date": "2026-02-18",
+      "time": "10:57:00",
+      "entry": 2312.7,
+      "stop": 2266.61,
+      "target": 2404.88,
+      "qty": 12,
+      "exitReason": "eod",
+      "exitPrice": 2478.9,
+      "pnl": 1994.4
+    },
+    {
+      "symbol": "RATNAMANI",
+      "date": "2026-02-18",
+      "time": "10:21:00",
+      "entry": 2312.5,
+      "stop": 2292.88,
+      "target": 2351.74,
+      "qty": 12,
+      "exitReason": "stop",
+      "exitPrice": 2491.95,
+      "pnl": 2153.4
+    },
+    {
+      "symbol": "E2E",
+      "date": "2026-02-18",
+      "time": "10:27:00",
+      "entry": 2629,
+      "stop": 2592.27,
+      "target": 2702.46,
+      "qty": 11,
+      "exitReason": "stop",
+      "exitPrice": 2893.24,
+      "pnl": 2906.64
+    },
+    {
+      "symbol": "IZMO",
+      "date": "2026-02-18",
+      "time": "10:51:00",
+      "entry": 848.7,
+      "stop": 830.97,
+      "target": 884.16,
+      "qty": 35,
+      "exitReason": "stop",
+      "exitPrice": 869.76,
+      "pnl": 737.1
+    },
+    {
+      "symbol": "TARIL",
+      "date": "2026-02-18",
+      "time": "10:33:00",
+      "entry": 300,
+      "stop": 294.82,
+      "target": 310.36,
+      "qty": 100,
+      "exitReason": "stop",
+      "exitPrice": 294.82,
+      "pnl": -518
+    },
+    {
+      "symbol": "SCHNEIDER",
+      "date": "2026-02-18",
+      "time": "10:36:00",
+      "entry": 923.95,
+      "stop": 910.43,
+      "target": 950.99,
+      "qty": 32,
+      "exitReason": "eod",
+      "exitPrice": 915.5,
+      "pnl": -270.4
+    },
+    {
+      "symbol": "APARINDS",
+      "date": "2026-02-18",
+      "time": "10:54:00",
+      "entry": 10019,
+      "stop": 9737.07,
+      "target": 10582.86,
+      "qty": 2,
+      "exitReason": "stop",
+      "exitPrice": 10267.15,
+      "pnl": 496.3
+    },
+    {
+      "symbol": "KRN",
+      "date": "2026-02-18",
+      "time": "10:33:00",
+      "entry": 773.5,
+      "stop": 753.26,
+      "target": 813.98,
+      "qty": 38,
+      "exitReason": "eod",
+      "exitPrice": 788.3,
+      "pnl": 562.4
+    },
+    {
+      "symbol": "HEG",
+      "date": "2026-02-18",
+      "time": "11:18:00",
+      "entry": 554.95,
+      "stop": 544.41,
+      "target": 576.03,
+      "qty": 54,
+      "exitReason": "eod",
+      "exitPrice": 553,
+      "pnl": -105.3
+    },
+    {
+      "symbol": "SAMBHV",
+      "date": "2026-02-18",
+      "time": "10:33:00",
+      "entry": 101.67,
+      "stop": 100.2,
+      "target": 104.61,
+      "qty": 295,
+      "exitReason": "eod",
+      "exitPrice": 102.61,
+      "pnl": 277.3
+    },
+    {
+      "symbol": "EDELWEISS",
+      "date": "2026-02-18",
+      "time": "10:30:00",
+      "entry": 129.61,
+      "stop": 128.05,
+      "target": 132.73,
+      "qty": 231,
+      "exitReason": "stop",
+      "exitPrice": 128.05,
+      "pnl": -360.36
+    }
+  ]
+}

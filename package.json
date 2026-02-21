@@ -12,7 +12,9 @@
     "kite:login": "node scripts/kiteLogin.js",
     "kite:session": "node scripts/kiteSession.js",
     "kite:history": "node scripts/kiteHistorical.js",
-    "kite:ohlc": "node scripts/kiteOHLC.js"
+    "kite:ohlc": "node scripts/kiteOHLC.js",
+    "live": "node scripts/liveScanner.js",
+    "positions": "node scripts/positionManager.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

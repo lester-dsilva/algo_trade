@@ -1,0 +1,39 @@
+{
+  "date": "2026-02-19",
+  "runAt": "2026-02-21T06:42:01.821Z",
+  "totalPnl": 2073.2799999999997,
+  "totalCapitalDeployed": 59590.1,
+  "counts": {
+    "total": 2,
+    "stop": 2,
+    "target": 0,
+    "eod": 0,
+    "noData": 0
+  },
+  "trades": [
+    {
+      "symbol": "NEWGEN",
+      "date": "2026-02-19",
+      "time": "10:57:00",
+      "entry": 607.4,
+      "stop": 594.36,
+      "target": 633.48,
+      "qty": 49,
+      "exitReason": "stop",
+      "exitPrice": 627.94,
+      "pnl": 1006.46
+    },
+    {
+      "symbol": "NITINSPIN",
+      "date": "2026-02-19",
+      "time": "10:24:00",
+      "entry": 363.75,
+      "stop": 357.25,
+      "target": 376.75,
+      "qty": 82,
+      "exitReason": "stop",
+      "exitPrice": 376.76,
+      "pnl": 1066.82
+    }
+  ]
+}
