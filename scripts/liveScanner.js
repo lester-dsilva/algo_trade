@@ -37,6 +37,28 @@ function logToFile(event, detail = '') {
   } catch (_) {}
 }
 
+/** Return date string N calendar days before dateStr (YYYY-MM-DD). */
+function dateMinusDays(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Return YYYY-MM-DD in IST from a Kite day-candle (API timestamps are exchange/IST). */
+function candleDateStr(c) {
+  if (!c || c.date == null) return '';
+  const d = c.date instanceof Date ? c.date : new Date(c.date);
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
+/** Ms until 9:20 AM IST (defer today open fetch so day candle is stable). Returns 0 if already past. */
+function msUntil920Ist() {
+  const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const target = new Date(`${todayIST}T09:20:00+05:30`);
+  const ms = target.getTime() - Date.now();
+  return ms > 0 ? ms : 0;
+}
+
 function loadWatchlistSymbols() {
   const raw = fs.readFileSync(WATCHLIST_PATH, 'utf8').replace(/\r\n/g, '\n').trim();
   const lines = raw.split('\n');
@@ -53,8 +75,11 @@ function loadWatchlistSymbols() {
 }
 
 function findInstrumentToken(instruments, tradingsymbol) {
-  const sym = tradingsymbol.includes(':') ? tradingsymbol.split(':')[1] : tradingsymbol;
-  const row = instruments.find((i) => i.exchange === 'NSE' && i.tradingsymbol === sym);
+  const sym = (tradingsymbol.includes(':') ? tradingsymbol.split(':')[1] : tradingsymbol).trim();
+  if (!sym) return null;
+  const nse = instruments.filter((i) => i.exchange === 'NSE');
+  const trySym = (s) => nse.find((i) => i.tradingsymbol === s || i.tradingsymbol.toUpperCase() === s.toUpperCase());
+  const row = trySym(sym) || trySym(`${sym}-EQ`) || trySym(`${sym}-BE`);
   return row ? row.instrument_token : null;
 }
 
@@ -64,9 +89,11 @@ function computeTarget(entryPrice, stop) {
 }
 
 async function main() {
+  logToFile('start', 'script started');
   const symbols = loadWatchlistSymbols();
   if (symbols.length === 0) {
     console.error('No symbols in', WATCHLIST_PATH);
+    logToFile('exit', 'no symbols in watchlist');
     process.exit(1);
   }
 
@@ -93,15 +120,16 @@ async function main() {
   const gapUpThresholdPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
   const prevCloseBySymbol = new Map();
   const prevDayVolumeBySymbol = new Map();
+  const dayOpenBySymbol = new Map();
   const CONCURRENCY = 15;
   const symbolsForPrevDay = [...symbolToToken.keys()];
   const totalBatches = Math.ceil(symbolsForPrevDay.length / CONCURRENCY);
-  console.error('Loading prev day (close + volume) for', symbolsForPrevDay.length, 'symbols (' + totalBatches, 'batches)...');
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  const yesterday = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const dayFrom = new Date(yesterday);
-  const dayTo = new Date(yesterday);
+  const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const rangeFromStr = dateMinusDays(todayStr, 7);
+  const dayFrom = new Date(`${rangeFromStr}T00:00:00+05:30`);
+  const dayTo = new Date(`${todayStr}T23:59:59+05:30`);
+  // Same as analyzePnl: prev day from daily API only; 3m only for current day (built from ticks below).
+  console.error('Prev day (close + volume) from daily API only, range', rangeFromStr, '→', todayStr, '|', symbolsForPrevDay.length, 'symbols');
   for (let i = 0; i < symbolsForPrevDay.length; i += CONCURRENCY) {
     const chunk = symbolsForPrevDay.slice(i, i + CONCURRENCY);
     await Promise.all(
@@ -110,10 +138,13 @@ async function main() {
           const token = symbolToToken.get(symbol);
           const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
           if (candles && candles.length > 0) {
-            const c = candles[candles.length - 1];
-            prevCloseBySymbol.set(symbol, c.close);
-            // Yesterday's full-day volume (same unit as our 3m bar volumes) for filter: entry only when today's vol so far > this
-            prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+            for (const c of candles) {
+              const d = candleDateStr(c);
+              if (d < todayStr) {
+                prevCloseBySymbol.set(symbol, c.close);
+                prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+              }
+            }
           }
         } catch {
           // skip
@@ -125,7 +156,36 @@ async function main() {
       console.error('Prev day progress:', batchNum, '/', totalBatches, '| prev close:', prevCloseBySymbol.size, '| prev volume:', prevDayVolumeBySymbol.size);
     }
   }
-  console.error('Prev day done; volume for', prevDayVolumeBySymbol.size, 'symbols (used for filter: Daily Vol > 1 day ago Vol)');
+  console.error('Prev day done:', prevDayVolumeBySymbol.size, 'symbols (daily only; holidays handled)');
+
+  const todayFrom = new Date(`${todayStr}T00:00:00+05:30`);
+  const todayTo = new Date(`${todayStr}T23:59:59+05:30`);
+  const fetchTodayOpen = async () => {
+    console.error('Loading today open (daily only) for gap filter:', symbolsForPrevDay.length, 'symbols');
+    for (let i = 0; i < symbolsForPrevDay.length; i += CONCURRENCY) {
+      const chunk = symbolsForPrevDay.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        chunk.map(async (symbol) => {
+          try {
+            const token = symbolToToken.get(symbol);
+            const candles = await kite.getHistoricalData(token, 'day', todayFrom, todayTo, false, false);
+            if (candles && candles.length > 0) dayOpenBySymbol.set(symbol, candles[0].open);
+          } catch {
+            // skip
+          }
+        })
+      );
+    }
+    console.error('Today open loaded:', dayOpenBySymbol.size, 'symbols (daily only; gap = prev close vs today open)');
+  };
+
+  const delayMs = msUntil920Ist();
+  if (delayMs > 0) {
+    console.error('Today open deferred to 9:20 IST (in', Math.round(delayMs / 1000), 's)');
+    setTimeout(() => { fetchTodayOpen().catch((e) => console.error('fetchTodayOpen failed', e?.message)); }, delayMs);
+  } else {
+    await fetchTodayOpen();
+  }
 
   const sessionPath = path.join(process.cwd(), '.kite_session');
   const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
@@ -171,6 +231,8 @@ async function main() {
       lookback: 15, maxRangePct: 2, tolerancePct: 1, sharpMovePct: 4, pullbackNearPct: 2, maxPerDay: 2,
       maxGapUpPct: gapUpThresholdPct ?? undefined, maxEntryCandleRangePct, maxSlPct, maxPullbackPct, maxConsolidationRangePct,
       getPrevDayVolume: () => prevDayVolumeBySymbol.get(symbol) ?? null,
+      getPrevDayCloseDaily: () => prevCloseBySymbol.get(symbol) ?? null,
+      getDayOpenDaily: () => dayOpenBySymbol.get(symbol) ?? null,
     };
     const { breakouts, pullbacks, reversalBreakouts } = runEntryLogic(byDate, sortedDates, opts);
 
@@ -179,13 +241,18 @@ async function main() {
     for (const r of reversalBreakouts) {
       if (r.time !== time) continue;
       if (gapUpThresholdPct != null && Number.isFinite(gapUpThresholdPct)) {
+        const dayOpen = dayOpenBySymbol.get(symbol);
+        if (dayOpen == null) {
+          const reason = 'today open not loaded yet (wait until 9:20 IST)';
+          console.error(`[skip] ${symbol} reversal breakout skipped: ${reason}`);
+          logToFile('skip', { symbol, date, time, reason });
+          continue;
+        }
         const prevClose = prevCloseBySymbol.get(symbol);
-        const dayBars = seriesBySymbol.get(symbol)?.[date];
-        const dayOpen = dayBars && dayBars.length > 0 ? dayBars[0].open : null;
-        if (prevClose != null && prevClose > 0 && dayOpen != null && dayOpen > prevClose) {
+        if (prevClose != null && prevClose > 0 && dayOpen > prevClose) {
           const gapPct = ((dayOpen - prevClose) / prevClose) * 100;
           if (gapPct >= gapUpThresholdPct) {
-            const reason = `gap ${gapPct.toFixed(1)}% >= ${gapUpThresholdPct}%`;
+            const reason = `gap ${gapPct.toFixed(1)}% >= ${gapUpThresholdPct}% (daily: prev close vs today open)`;
             console.error(`[skip] ${symbol} reversal breakout skipped: ${reason}`);
             logToFile('skip', { symbol, date, time, reason });
             continue;
@@ -255,13 +322,19 @@ async function main() {
   });
 
   ticker.on('disconnect', (err) => {
-    const reason = err?.message ?? err ?? '(no reason)';
-    console.error('Disconnected', reason);
+    let reason = '(no reason)';
+    if (err && typeof err === 'object') {
+      if (err.code != null) reason = `code ${err.code}`;
+      if (err.reason && String(err.reason).trim()) reason += ` ${err.reason}`.trim();
+      else if (err.message) reason = err.message;
+    } else if (err != null) reason = String(err);
+    console.error('Disconnected', reason, '(will reconnect if possible)');
     logToFile('disconnect', reason);
   });
   ticker.on('error', (err) => {
-    console.error('Ticker error', err);
-    logToFile('error', err?.message ?? String(err));
+    const msg = err?.message ?? (err && typeof err === 'object' ? `code ${err.code ?? ''} ${err.reason ?? ''}`.trim() : String(err));
+    console.error('Ticker error', msg);
+    logToFile('error', msg || (err?.message ?? String(err)));
   });
   ticker.on('noreconnect', () => {
     console.error('Ticker gave up reconnecting.');

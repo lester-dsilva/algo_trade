@@ -1,0 +1,87 @@
+{
+  "date": "2026-02-23",
+  "runAt": "2026-02-23T12:32:25.358Z",
+  "totalPnl": 2862.34,
+  "totalCapitalDeployed": 178325.66,
+  "counts": {
+    "total": 6,
+    "stop": 2,
+    "target": 0,
+    "eod": 4,
+    "noData": 0
+  },
+  "trades": [
+    {
+      "symbol": "BLUEJET",
+      "date": "2026-02-23",
+      "time": "11:18:00",
+      "entry": 370,
+      "stop": 365.21,
+      "target": 379.58,
+      "qty": 81,
+      "exitReason": "eod",
+      "exitPrice": 391.4,
+      "pnl": 1733.4
+    },
+    {
+      "symbol": "AEGISVOPAK",
+      "date": "2026-02-23",
+      "time": "10:24:00",
+      "entry": 230.99,
+      "stop": 228.38,
+      "target": 236.21,
+      "qty": 129,
+      "exitReason": "stop",
+      "exitPrice": 228.38,
+      "pnl": -336.69
+    },
+    {
+      "symbol": "JINDALPOLY",
+      "date": "2026-02-23",
+      "time": "11:30:00",
+      "entry": 525.2,
+      "stop": 517.35,
+      "target": 540.9,
+      "qty": 57,
+      "exitReason": "stop",
+      "exitPrice": 538.79,
+      "pnl": 774.63
+    },
+    {
+      "symbol": "PARKHOSPS",
+      "date": "2026-02-23",
+      "time": "11:21:00",
+      "entry": 192.8,
+      "stop": 188.25,
+      "target": 201.9,
+      "qty": 155,
+      "exitReason": "eod",
+      "exitPrice": 194.91,
+      "pnl": 327.05
+    },
+    {
+      "symbol": "TEGA",
+      "date": "2026-02-23",
+      "time": "11:12:00",
+      "entry": 1706,
+      "stop": 1678.86,
+      "target": 1760.28,
+      "qty": 17,
+      "exitReason": "eod",
+      "exitPrice": 1726.8,
+      "pnl": 353.6
+    },
+    {
+      "symbol": "MAMATA",
+      "date": "2026-02-23",
+      "time": "12:06:00",
+      "entry": 430.95,
+      "stop": 419.99,
+      "target": 452.87,
+      "qty": 69,
+      "exitReason": "eod",
+      "exitPrice": 431.1,
+      "pnl": 10.35
+    }
+  ]
+}

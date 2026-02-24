@@ -1,0 +1,51 @@
+{
+  "date": "2026-02-24",
+  "runAt": "2026-02-24T13:02:30.680Z",
+  "totalPnl": 1822.45,
+  "totalCapitalDeployed": 88737.83,
+  "counts": {
+    "total": 3,
+    "stop": 2,
+    "target": 0,
+    "eod": 1,
+    "noData": 0
+  },
+  "trades": [
+    {
+      "symbol": "UTKARSHBNK",
+      "date": "2026-02-24",
+      "time": "11:57:00",
+      "entry": 14.67,
+      "stop": 14.23,
+      "target": 15.55,
+      "qty": 2044,
+      "exitReason": "stop",
+      "exitPrice": 15.1,
+      "pnl": 878.92
+    },
+    {
+      "symbol": "DOLPHIN",
+      "date": "2026-02-24",
+      "time": "11:06:00",
+      "entry": 436,
+      "stop": 422.92,
+      "target": 462.16,
+      "qty": 68,
+      "exitReason": "stop",
+      "exitPrice": 446.16,
+      "pnl": 690.88
+    },
+    {
+      "symbol": "NATCOPHARM",
+      "date": "2026-02-24",
+      "time": "10:54:00",
+      "entry": 938.85,
+      "stop": 923.01,
+      "target": 970.53,
+      "qty": 31,
+      "exitReason": "eod",
+      "exitPrice": 947,
+      "pnl": 252.65
+    }
+  ]
+}

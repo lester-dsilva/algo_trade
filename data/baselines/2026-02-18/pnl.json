@@ -1,13 +1,13 @@
 {
   "date": "2026-02-18",
-  "runAt": "2026-02-21T06:42:31.103Z",
-  "totalPnl": 7873.4800000000005,
-  "totalCapitalDeployed": 313023.16000000003,
+  "runAt": "2026-02-24T13:31:04.095Z",
+  "totalPnl": 7957.830000000001,
+  "totalCapitalDeployed": 343008.76,
   "counts": {
-    "total": 11,
+    "total": 12,
     "stop": 6,
     "target": 0,
-    "eod": 5,
+    "eod": 6,
     "noData": 0
   },
   "trades": [
@@ -36,7 +36,7 @@
       "pnl": 2153.4
     },
     {
-      "symbol": "E2E",
+      "symbol": "E2E-BE",
       "date": "2026-02-18",
       "time": "10:27:00",
       "entry": 2629,
@@ -48,7 +48,7 @@
       "pnl": 2906.64
     },
     {
-      "symbol": "IZMO",
+      "symbol": "IZMO-BE",
       "date": "2026-02-18",
       "time": "10:51:00",
       "entry": 848.7,
@@ -72,7 +72,7 @@
       "pnl": -518
     },
     {
-      "symbol": "SCHNEIDER",
+      "symbol": "SCHNEIDER-BE",
       "date": "2026-02-18",
       "time": "10:36:00",
       "entry": 923.95,
@@ -98,14 +98,14 @@
     {
       "symbol": "KRN",
       "date": "2026-02-18",
-      "time": "10:33:00",
-      "entry": 773.5,
+      "time": "10:48:00",
+      "entry": 774.25,
       "stop": 753.26,
-      "target": 813.98,
+      "target": 816.23,
       "qty": 38,
       "exitReason": "eod",
       "exitPrice": 788.3,
-      "pnl": 562.4
+      "pnl": 533.9
     },
     {
       "symbol": "HEG",
@@ -130,6 +130,18 @@
       "exitReason": "eod",
       "exitPrice": 102.61,
       "pnl": 277.3
+    },
+    {
+      "symbol": "RAMKY",
+      "date": "2026-02-18",
+      "time": "11:51:00",
+      "entry": 491.1,
+      "stop": 479.89,
+      "target": 513.52,
+      "qty": 61,
+      "exitReason": "eod",
+      "exitPrice": 492.95,
+      "pnl": 112.85
     },
     {
       "symbol": "EDELWEISS",

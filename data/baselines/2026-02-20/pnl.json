@@ -1,8 +1,8 @@
 {
   "date": "2026-02-20",
-  "runAt": "2026-02-21T06:34:48.597Z",
-  "totalPnl": 1558.84,
-  "totalCapitalDeployed": 202803.30000000002,
+  "runAt": "2026-02-24T13:10:17.031Z",
+  "totalPnl": 1174.28,
+  "totalCapitalDeployed": 202789.17999999996,
   "counts": {
     "total": 7,
     "stop": 3,
@@ -38,14 +38,14 @@
     {
       "symbol": "ABINFRA",
       "date": "2026-02-20",
-      "time": "10:30:00",
-      "entry": 21.6,
+      "time": "10:33:00",
+      "entry": 21.74,
       "stop": 21.29,
-      "target": 22.22,
-      "qty": 1388,
+      "target": 22.64,
+      "qty": 1379,
       "exitReason": "stop",
       "exitPrice": 22.1,
-      "pnl": 694
+      "pnl": 496.44
     },
     {
       "symbol": "BDL",
@@ -62,14 +62,14 @@
     {
       "symbol": "BALAJITELE",
       "date": "2026-02-20",
-      "time": "10:33:00",
-      "entry": 98.5,
+      "time": "10:39:00",
+      "entry": 99.11,
       "stop": 97.12,
-      "target": 101.26,
-      "qty": 304,
+      "target": 103.09,
+      "qty": 302,
       "exitReason": "eod",
       "exitPrice": 99.89,
-      "pnl": 422.56
+      "pnl": 235.56
     },
     {
       "symbol": "AURUM",

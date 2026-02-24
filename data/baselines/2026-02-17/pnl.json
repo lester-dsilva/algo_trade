@@ -1,0 +1,39 @@
+{
+  "date": "2026-02-17",
+  "runAt": "2026-02-23T02:36:31.134Z",
+  "totalPnl": -273.65999999999997,
+  "totalCapitalDeployed": 59986.630000000005,
+  "counts": {
+    "total": 2,
+    "stop": 0,
+    "target": 0,
+    "eod": 2,
+    "noData": 0
+  },
+  "trades": [
+    {
+      "symbol": "UCOBANK",
+      "date": "2026-02-17",
+      "time": "10:54:00",
+      "entry": 29.15,
+      "stop": 28.47,
+      "target": 30.51,
+      "qty": 1029,
+      "exitReason": "eod",
+      "exitPrice": 28.93,
+      "pnl": -226.38
+    },
+    {
+      "symbol": "CENTRALBK",
+      "date": "2026-02-17",
+      "time": "10:51:00",
+      "entry": 38.06,
+      "stop": 37.39,
+      "target": 39.4,
+      "qty": 788,
+      "exitReason": "eod",
+      "exitPrice": 38,
+      "pnl": -47.28
+    }
+  ]
+}

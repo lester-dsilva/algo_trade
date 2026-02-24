@@ -14,6 +14,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import { getKite } from '../lib/kite.js';
 import { groupByDate, findReversalBreakouts } from '../lib/entryLogic.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -259,36 +260,103 @@ function loadWatchlistSymbols(useRewardWatchlist = false, customPath = null) {
   return [];
 }
 
-/** Get signals from entry logic for a given date (with Daily Vol > prev day filter). Needs 3m data for prevDay and date. */
-async function getSignalsFromEntryLogic(forDate, symbols, forceReload = false) {
-  const prevDate = new Date(forDate);
-  prevDate.setDate(prevDate.getDate() - 1);
-  const prevStr = prevDate.toISOString().slice(0, 10);
-  const from = prevStr;
-  const to = forDate;
+/** Return date string N calendar days before dateStr (YYYY-MM-DD). */
+function dateMinusDays(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Return YYYY-MM-DD in IST from a Kite day-candle (API timestamps are exchange/IST). */
+function candleDateStr(c) {
+  if (!c || c.date == null) return '';
+  const d = c.date instanceof Date ? c.date : new Date(c.date);
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
+function findInstrumentToken(instruments, symbol) {
+  const sym = ((symbol || '').includes(':') ? symbol.split(':')[1] : symbol).trim();
+  if (!sym) return null;
+  const nse = instruments.filter((i) => i.exchange === 'NSE');
+  const trySym = (s) => nse.find((i) => i.tradingsymbol === s || i.tradingsymbol.toUpperCase() === s.toUpperCase());
+  const row = trySym(sym) || trySym(`${sym}-EQ`) || trySym(`${sym}-BE`);
+  return row ? row.instrument_token : null;
+}
+
+/** Get signals from entry logic for a given date. Same logic as liveScanner: gap, volume (Daily Vol > prev day), SL%, etc.
+ *  3m data only for analysis day (forDate); prev day close/volume from daily API. */
+async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
+  const rangeDays = 7;
+  const dayRangeFrom = dateMinusDays(forDate, rangeDays);
   const maxGapUpPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
   const maxEntryCandleRangePct = process.env.MAX_ENTRY_CANDLE_RANGE_PCT != null ? parseFloat(process.env.MAX_ENTRY_CANDLE_RANGE_PCT) : 1.5;
   const maxSlPct = process.env.MAX_SL_PCT != null ? parseFloat(process.env.MAX_SL_PCT) : 2;
   const maxPullbackPct = process.env.MAX_PULLBACK_PCT != null ? parseFloat(process.env.MAX_PULLBACK_PCT) : 5;
   const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
-  const fetchDelayMs = parseInt(process.env.LOAD_DELAY_MS, 10) || 2000;
+  const fetchDelayMs = parseInt(process.env.LOAD_DELAY_MS, 10) || 1000;
   let lastFetchTime = 0;
   const signals = [];
+  let idx = 0;
   for (const symbol of symbols) {
-    const csvPath = path.join(DATA_DIR, normalizeFilename(symbol) + '.csv');
-    const needFetch = !fs.existsSync(csvPath) || forceReload;
-    if (needFetch && lastFetchTime > 0) {
+    idx++;
+    console.error(`[${idx}/${symbols.length}] ${symbol} (3m: prev + ${forDate}, daily: gap)...`);
+    if (lastFetchTime > 0) {
       const elapsed = Date.now() - lastFetchTime;
       if (elapsed < fetchDelayMs) await new Promise((r) => setTimeout(r, fetchDelayMs - elapsed));
-      lastFetchTime = Date.now();
-    } else if (needFetch) lastFetchTime = Date.now();
-    const rows = loadOrFetch(symbol, from, to, forceReload);
-    if (!rows || rows.length === 0) continue;
+    }
+    lastFetchTime = Date.now();
+    let prevDayCloseDaily = null;
+    let dayOpenDaily = null;
+    let prevTradingDate = null;
+    if (kite && instruments) {
+      const token = findInstrumentToken(instruments, symbol);
+      if (token) {
+        try {
+          const rangeFrom = new Date(`${dayRangeFrom}T00:00:00+05:30`);
+          const rangeTo = new Date(`${forDate}T23:59:59+05:30`);
+          const dayCandles = await kite.getHistoricalData(token, 'day', rangeFrom, rangeTo, false, false);
+          if (dayCandles && dayCandles.length > 0) {
+            for (const c of dayCandles) {
+              const d = candleDateStr(c);
+              if (d === forDate) dayOpenDaily = c.open;
+              if (d < forDate) {
+                prevDayCloseDaily = c.close;
+                prevTradingDate = d;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+    if (maxGapUpPct != null && prevDayCloseDaily == null) {
+      console.error(`  → no daily prev close for gap filter, skip`);
+      continue;
+    }
+    const loadFrom = prevTradingDate || forDate;
+    const rows = loadOrFetch(symbol, loadFrom, forDate, true);
+    if (!rows || rows.length === 0) {
+      console.error(`  → no 3m data for ${forDate}, skip`);
+      continue;
+    }
     const byDate = groupByDate(rows);
     const sortedDates = Object.keys(byDate).sort();
-    if (!sortedDates.includes(forDate)) continue;
-    const entries = findReversalBreakouts(byDate, sortedDates, 4, 2, maxGapUpPct, maxEntryCandleRangePct, maxSlPct, null, maxPullbackPct, maxConsolidationRangePct);
+    const forDateIdx = sortedDates.indexOf(forDate);
+    if (!sortedDates.includes(forDate) || forDateIdx <= 0) {
+      console.error(`  → missing ${forDate} or prev day in 3m data, skip`);
+      continue;
+    }
+    const getPrevDayVolume = () => (byDate[sortedDates[forDateIdx - 1]] || []).reduce((s, b) => s + (b.volume ?? 0), 0);
+    const getPrevDayCloseDaily = prevDayCloseDaily != null ? () => prevDayCloseDaily : null;
+    const dayOpenFrom3m = (byDate[forDate] && byDate[forDate].length) ? byDate[forDate][0].open : null;
+    const getDayOpenDaily = (dayOpenDaily != null ? () => dayOpenDaily : (dayOpenFrom3m != null ? () => dayOpenFrom3m : null));
+    const skipReasons = [];
+    const onSkip = (r) => skipReasons.push(r);
+    const entries = findReversalBreakouts(byDate, sortedDates, 4, 2, maxGapUpPct, maxEntryCandleRangePct, maxSlPct, getPrevDayVolume, maxPullbackPct, maxConsolidationRangePct, getPrevDayCloseDaily, getDayOpenDaily, onSkip);
     const minVolRatio = process.env.MIN_VOLUME_RATIO != null ? parseFloat(process.env.MIN_VOLUME_RATIO) : null;
+    if (!entries.some((e) => e.date === forDate) && skipReasons.length > 0) {
+      const last = [...new Set(skipReasons)].slice(-3);
+      console.error(`  → no entry: ${last.join('; ')}`);
+    }
     for (const e of entries) {
       if (e.date !== forDate) continue;
       if (minVolRatio != null && Number.isFinite(minVolRatio)) {
@@ -307,6 +375,12 @@ async function getSignalsFromEntryLogic(forDate, symbols, forceReload = false) {
         stop,
         target,
       });
+    }
+    if (entries.some((e) => e.date === forDate)) {
+      const prevClose = prevDayCloseDaily ?? null;
+      const dayOpen = dayOpenDaily ?? (byDate[forDate]?.length ? byDate[forDate][0].open : null);
+      const gapPct = prevClose != null && prevClose > 0 && dayOpen != null && dayOpen > prevClose ? ((dayOpen - prevClose) / prevClose) * 100 : null;
+      console.error(`  → gap: prevClose=${prevClose} dayOpen=${dayOpen} gapPct=${gapPct != null ? gapPct.toFixed(2) + '%' : 'n/a'} (daily)`);
     }
   }
   return signals;
@@ -424,21 +498,19 @@ async function main() {
       console.error('No symbols in watchlist (use --watchlist path, or data/watchlist_23.txt / data/watchlist_reward.txt)');
       process.exit(1);
     }
-    const prevDate = new Date(forDate);
-    prevDate.setDate(prevDate.getDate() - 1);
-    from = prevDate.toISOString().slice(0, 10);
+    from = forDate;
     to = forDate;
+    console.error(`3m data: prev trading day + ${forDate} (volume filter from 3m bars)\n`);
 
     if (loadOnly) {
-      const loadDelayMs = parseInt(process.env.LOAD_DELAY_MS, 10) || 2000;
-      console.error(`Loading 3m data for ${symbols.length} symbols | ${from} to ${to}`);
-      console.error(`Data directory: ${DATA_DIR}  (delay ${loadDelayMs}ms between symbols to avoid rate limit)\n`);
+      const loadDelayMs = parseInt(process.env.LOAD_DELAY_MS, 10) || 200;
+      console.error(`Loading 3m data for ${symbols.length} symbols | ${from} only\n`);
       for (let i = 0; i < symbols.length; i++) {
         const symbol = symbols[i];
         if (i > 0) await new Promise((r) => setTimeout(r, loadDelayMs));
-        const rows = loadOrFetch(symbol, from, to, false);
+        const rows = loadOrFetch(symbol, from, to, true);
         const file = normalizeFilename(symbol) + '.csv';
-        const csvPath = path.join(DATA_DIR, file);
+        const csvPath = path.join(DATA_DIR, to, file);
         const rowsCount = rows ? rows.length : 0;
         const hasDate = rows && rows.some((r) => (r.date || '').trim() === to);
         console.log(`${symbol.padEnd(14)} → ${csvPath}  (${rowsCount} rows, has ${to}: ${hasDate ? 'yes' : 'no'})`);
@@ -448,8 +520,10 @@ async function main() {
     }
 
     const watchlistLabel = customWatchlist ? ` (${path.basename(customWatchlist)})` : useReward ? ' (watchlist_reward)' : '';
-    console.error(`Entry logic (with Daily Vol > prev day filter) for ${forDate} | ${symbols.length} symbols${watchlistLabel}`);
-    signals = await getSignalsFromEntryLogic(forDate, symbols, false);
+    console.error(`Entry logic (same as liveScanner: gap from daily OHLC, Daily Vol > prev day, SL% etc.) for ${forDate} | ${symbols.length} symbols${watchlistLabel}`);
+    const kite = await getKite();
+    const instruments = await kite.getInstruments('NSE');
+    signals = await getSignalsFromEntryLogic(forDate, symbols, kite, instruments);
     if (signals.length === 0) {
       console.error('No entries found for', forDate, '(after volume filter).');
       process.exit(1);
