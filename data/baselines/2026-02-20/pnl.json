@@ -1,11 +1,11 @@
 {
   "date": "2026-02-20",
-  "runAt": "2026-02-24T13:10:17.031Z",
-  "totalPnl": 1174.28,
-  "totalCapitalDeployed": 202789.17999999996,
+  "runAt": "2026-02-25T13:17:52.818Z",
+  "totalPnl": 1324.06,
+  "totalCapitalDeployed": 172756.65999999997,
   "counts": {
-    "total": 7,
-    "stop": 3,
+    "total": 6,
+    "stop": 2,
     "target": 0,
     "eod": 4,
     "noData": 0
@@ -16,32 +16,20 @@
       "date": "2026-02-20",
       "time": "10:21:00",
       "entry": 6059,
-      "stop": 5996.87,
-      "target": 6183.26,
+      "stop": 5960.05,
+      "target": 6256.9,
       "qty": 4,
       "exitReason": "stop",
       "exitPrice": 6151.33,
       "pnl": 369.32
     },
     {
-      "symbol": "STANLEY",
-      "date": "2026-02-20",
-      "time": "11:48:00",
-      "entry": 177.5,
-      "stop": 174.53,
-      "target": 183.44,
-      "qty": 169,
-      "exitReason": "stop",
-      "exitPrice": 174.53,
-      "pnl": -501.93
-    },
-    {
       "symbol": "ABINFRA",
       "date": "2026-02-20",
       "time": "10:33:00",
       "entry": 21.74,
-      "stop": 21.29,
-      "target": 22.64,
+      "stop": 21.34,
+      "target": 22.54,
       "qty": 1379,
       "exitReason": "stop",
       "exitPrice": 22.1,
@@ -62,38 +50,38 @@
     {
       "symbol": "BALAJITELE",
       "date": "2026-02-20",
-      "time": "10:39:00",
-      "entry": 99.11,
+      "time": "10:42:00",
+      "entry": 99.76,
       "stop": 97.12,
-      "target": 103.09,
-      "qty": 302,
+      "target": 105.04,
+      "qty": 300,
       "exitReason": "eod",
       "exitPrice": 99.89,
-      "pnl": 235.56
+      "pnl": 39
     },
     {
       "symbol": "AURUM",
       "date": "2026-02-20",
-      "time": "10:42:00",
-      "entry": 185.2,
-      "stop": 180.26,
-      "target": 195.08,
-      "qty": 161,
+      "time": "10:45:00",
+      "entry": 186.5,
+      "stop": 181.4,
+      "target": 196.7,
+      "qty": 160,
       "exitReason": "eod",
       "exitPrice": 187.39,
-      "pnl": 352.59
+      "pnl": 142.4
     },
     {
       "symbol": "YATHARTH",
       "date": "2026-02-20",
-      "time": "11:12:00",
-      "entry": 710.7,
-      "stop": 694.66,
-      "target": 742.78,
+      "time": "10:51:00",
+      "entry": 709.4,
+      "stop": 699.14,
+      "target": 729.92,
       "qty": 42,
       "exitReason": "eod",
       "exitPrice": 720.55,
-      "pnl": 413.7
+      "pnl": 468.3
     }
   ]
 }

@@ -100,15 +100,26 @@ function parseSignalsFromLog(logPath) {
   return signals;
 }
 
-function loadOrFetch(symbol, from, to, forceReload = false) {
+/**
+ * Load 3m rows for symbol from disk date-folders and/or fetch from Kite API.
+ * @param {boolean} diskOnly  When true, only read from data/<date>/ folders — never call kiteOHLC.js.
+ *                            Missing dates are skipped (weekend/holiday gaps are fine).
+ *                            Pass true when prev day data is guaranteed to be pre-fetched on disk.
+ */
+function loadOrFetch(symbol, from, to, forceReload = false, diskOnly = false) {
   const file = normalizeFilename(symbol) + '.csv';
 
-  const tryLoadFromDateFolders = () => {
+  // skipMissing=true: silently skip absent date CSVs (weekends/holidays).
+  // skipMissing=false (default): return null on first missing date to trigger API fallback.
+  const tryLoadFromDateFolders = (skipMissing = false) => {
     const dates = dateRange(from, to);
     const rows = [];
     for (const d of dates) {
       const p = path.join(DATA_DIR, d, file);
-      if (!fs.existsSync(p)) return null;
+      if (!fs.existsSync(p)) {
+        if (skipMissing) continue;
+        return null;
+      }
       const content = fs.readFileSync(p, 'utf8');
       const parsed = parseCsv(content);
       for (const r of parsed) {
@@ -129,9 +140,12 @@ function loadOrFetch(symbol, from, to, forceReload = false) {
   };
 
   if (!forceReload) {
-    const fromFolders = tryLoadFromDateFolders();
+    const fromFolders = tryLoadFromDateFolders(diskOnly);
     if (fromFolders && fromFolders.length > 0) return fromFolders;
   }
+
+  // disk-only mode: never call the API — caller must pre-fetch data with fetchPrevDay3m.js
+  if (diskOnly) return null;
 
   const tmpDir = path.join(DATA_DIR, '.tmp');
   const tmpPath = path.join(tmpDir, file);
@@ -163,6 +177,53 @@ function loadOrFetch(symbol, from, to, forceReload = false) {
 
   writeCsvByDate(symbol, normalized);
   return normalized;
+}
+
+const CACHE_DIR = path.join(DATA_DIR, '.cache');
+
+/** Load cached JSON, return null if missing or older than maxAgeMs. */
+function loadCache(cacheFile, maxAgeMs = 24 * 60 * 60 * 1000) {
+  try {
+    if (!fs.existsSync(cacheFile)) return null;
+    const stat = fs.statSync(cacheFile);
+    if (Date.now() - stat.mtimeMs > maxAgeMs) return null;
+    return JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  } catch (_) { return null; }
+}
+
+/** Save JSON to cache file, creating dirs as needed. */
+function saveCache(cacheFile, data) {
+  try {
+    const dir = path.dirname(cacheFile);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify(data), 'utf8');
+  } catch (_) {}
+}
+
+/** Get NSE instruments, using a 24-hour disk cache. */
+async function getInstrumentsCached(kite) {
+  const cacheFile = path.join(CACHE_DIR, 'instruments_nse.json');
+  const cached = loadCache(cacheFile, 24 * 60 * 60 * 1000);
+  if (cached) {
+    console.error('  (instruments: using cache)');
+    return cached;
+  }
+  const instruments = await kite.getInstruments('NSE');
+  saveCache(cacheFile, instruments);
+  return instruments;
+}
+
+/** Get daily OHLC for a symbol/date range, using a per-date disk cache. */
+async function getDailyOhlcCached(kite, token, symbol, forDate, dayRangeFrom) {
+  const cacheFile = path.join(CACHE_DIR, 'daily', forDate, `${normalizeFilename(symbol)}.json`);
+  const cached = loadCache(cacheFile, 7 * 24 * 60 * 60 * 1000); // keep 7 days
+  if (cached) return cached;
+  const rangeFrom = new Date(`${dayRangeFrom}T00:00:00+05:30`);
+  const rangeTo = new Date(`${forDate}T23:59:59+05:30`);
+  const dayCandles = await kite.getHistoricalData(token, 'day', rangeFrom, rangeTo, false, false);
+  const result = { dayCandles: dayCandles || [] };
+  saveCache(cacheFile, result);
+  return result;
 }
 
 function writeCsvByDate(symbol, rows) {
@@ -239,6 +300,8 @@ function loadWatchlistSymbols(useRewardWatchlist = false, customPath = null) {
     const p = path.isAbsolute(customPath) ? customPath : path.join(process.cwd(), customPath);
     if (fs.existsSync(p)) {
       const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      // Skip header row if the file is a CSV whose first column is "tradingsymbol"
+      if (lines.length > 0 && lines[0].toLowerCase().split(',')[0].trim() === 'tradingsymbol') lines.shift();
       if (lines.length > 0) return lines;
     }
     return [];
@@ -286,6 +349,42 @@ function findInstrumentToken(instruments, symbol) {
 /** Get signals from entry logic for a given date. Same logic as liveScanner: gap, volume (Daily Vol > prev day), SL%, etc.
  *  3m data only for analysis day (forDate); prev day close/volume from daily API. */
 async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
+  // ── Pre-flight: prev day 3m CSVs must already be on disk ───────────────────
+  // Find the most recent data/<date>/ folder before forDate.
+  const prevDateOnDisk = (() => {
+    try {
+      return fs.readdirSync(DATA_DIR)
+        .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d < forDate)
+        .sort().reverse()[0] ?? null;
+    } catch { return null; }
+  })();
+
+  if (!prevDateOnDisk) {
+    console.error(`\nNo prev day data folder found in data/ before ${forDate}.`);
+    console.error(`Fetch prev day 3m bars first:\n  node scripts/fetchPrevDay3m.js`);
+    process.exit(1);
+  }
+
+  const missingPrevDay = symbols.filter(
+    s => !fs.existsSync(path.join(DATA_DIR, prevDateOnDisk, normalizeFilename(s) + '.csv'))
+  );
+  if (missingPrevDay.length > 0) {
+    const pct = (missingPrevDay.length / symbols.length) * 100;
+    if (pct > 5) {
+      // More than 5% missing — fetchPrevDay3m.js was likely not run at all
+      console.error(`\n${missingPrevDay.length}/${symbols.length} symbols (${pct.toFixed(0)}%) missing prev day 3m CSV (${prevDateOnDisk}).`);
+      if (missingPrevDay.length <= 30) console.error('  Missing:', missingPrevDay.join(', '));
+      console.error(`\nFetch prev day 3m bars first:\n  node scripts/fetchPrevDay3m.js ${prevDateOnDisk}`);
+      process.exit(1);
+    }
+    // Small gap (≤5%) — likely delisted/non-NSE symbols; warn and continue
+    console.error(`Prev day 3m: ${prevDateOnDisk} — ${symbols.length - missingPrevDay.length}/${symbols.length} on disk (${missingPrevDay.length} skipped: delisted/not in NSE) ✓`);
+  } else {
+    console.error(`Prev day 3m: ${prevDateOnDisk} — all ${symbols.length} symbols on disk ✓`);
+  }
+  console.error('');
+  // ───────────────────────────────────────────────────────────────────────────
+
   const rangeDays = 7;
   const dayRangeFrom = dateMinusDays(forDate, rangeDays);
   const maxGapUpPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
@@ -312,9 +411,7 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
       const token = findInstrumentToken(instruments, symbol);
       if (token) {
         try {
-          const rangeFrom = new Date(`${dayRangeFrom}T00:00:00+05:30`);
-          const rangeTo = new Date(`${forDate}T23:59:59+05:30`);
-          const dayCandles = await kite.getHistoricalData(token, 'day', rangeFrom, rangeTo, false, false);
+          const { dayCandles } = await getDailyOhlcCached(kite, token, symbol, forDate, dayRangeFrom);
           if (dayCandles && dayCandles.length > 0) {
             for (const c of dayCandles) {
               const d = candleDateStr(c);
@@ -332,10 +429,11 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
       console.error(`  → no daily prev close for gap filter, skip`);
       continue;
     }
-    const loadFrom = prevTradingDate || forDate;
-    const rows = loadOrFetch(symbol, loadFrom, forDate, true);
+    const loadFrom = prevTradingDate || prevDateOnDisk;
+    // diskOnly=true: read from data/<date>/ folders only — never call kiteOHLC.js (pre-flight above guarantees prev day is on disk)
+    const rows = loadOrFetch(symbol, loadFrom, forDate, false, true);
     if (!rows || rows.length === 0) {
-      console.error(`  → no 3m data for ${forDate}, skip`);
+      console.error(`  → no 3m data on disk for ${forDate}, skip`);
       continue;
     }
     const byDate = groupByDate(rows);
@@ -522,7 +620,7 @@ async function main() {
     const watchlistLabel = customWatchlist ? ` (${path.basename(customWatchlist)})` : useReward ? ' (watchlist_reward)' : '';
     console.error(`Entry logic (same as liveScanner: gap from daily OHLC, Daily Vol > prev day, SL% etc.) for ${forDate} | ${symbols.length} symbols${watchlistLabel}`);
     const kite = await getKite();
-    const instruments = await kite.getInstruments('NSE');
+    const instruments = await getInstrumentsCached(kite);
     signals = await getSignalsFromEntryLogic(forDate, symbols, kite, instruments);
     if (signals.length === 0) {
       console.error('No entries found for', forDate, '(after volume filter).');

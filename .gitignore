@@ -8,3 +8,4 @@ node_modules/
 data/.tmp/
 data/*.csv
 data/*/*.csv
+data/.cache

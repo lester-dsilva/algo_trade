@@ -14,7 +14,7 @@ import { getKite } from '../lib/kite.js';
 import { KiteTicker } from 'kiteconnect';
 import { createCandleBuilder } from '../lib/candleBuilder.js';
 import { runEntryLogic } from '../lib/entryLogic.js';
-import { addPosition } from '../lib/positionStore.js';
+import { addPosition, processBar, getTotalPnl, eodSweep, POSITION_VALUE } from '../lib/positionStore.js';
 import { sendAlert } from '../lib/telegram.js';
 
 const WATCHLIST_PATH = path.join(process.cwd(), 'config', 'nse_mcap_above_900cr.csv');
@@ -88,6 +88,48 @@ function computeTarget(entryPrice, stop) {
   return Math.round((entryPrice + 2 * risk) * 100) / 100;
 }
 
+/** Normalize symbol to lowercase CSV filename (matches analyzePnl convention). */
+function normalizeSymbolFilename(symbol) {
+  return symbol.toLowerCase().replace(/&/g, '').replace(/\s/g, '');
+}
+
+/** Find the most recent date folder in data/ that is before todayStr (YYYY-MM-DD). */
+function findPrevDateFolder(todayStr) {
+  const dataDir = path.join(process.cwd(), 'data');
+  try {
+    const dirs = fs.readdirSync(dataDir)
+      .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d) && d < todayStr)
+      .sort()
+      .reverse();
+    return dirs.length > 0 ? dirs[0] : null;
+  } catch { return null; }
+}
+
+/**
+ * Load the last nBars 3m candles for symbol from data/<prevDateFolder>/<symbol>.csv.
+ * Returns [] if file not found or on any error.
+ */
+function loadPrevDayTailBars(symbol, prevDateFolder, nBars = 25) {
+  const file = normalizeSymbolFilename(symbol) + '.csv';
+  const csvPath = path.join(process.cwd(), 'data', prevDateFolder, file);
+  try {
+    if (!fs.existsSync(csvPath)) return [];
+    const lines = fs.readFileSync(csvPath, 'utf8').replace(/^\uFEFF/, '').trim().split(/\r?\n/);
+    if (lines.length < 2) return [];
+    const header = lines[0].toLowerCase().split(',').map(s => s.trim());
+    const rows = [];
+    for (let li = 1; li < lines.length; li++) {
+      const vals = lines[li].split(',');
+      const r = {};
+      header.forEach((h, j) => { r[h] = (vals[j] ?? '').trim(); });
+      const o = parseFloat(r.open), h2 = parseFloat(r.high), l = parseFloat(r.low), c = parseFloat(r.close), v = parseFloat(r.volume);
+      if (!r.date || !Number.isFinite(o) || o === 0) continue;
+      rows.push({ date: r.date, time: r.time, open: o, high: h2, low: l, close: c, volume: Number.isFinite(v) ? v : 0 });
+    }
+    return rows.slice(-nBars);
+  } catch { return []; }
+}
+
 async function main() {
   logToFile('start', 'script started');
   const symbols = loadWatchlistSymbols();
@@ -120,6 +162,7 @@ async function main() {
   const gapUpThresholdPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
   const prevCloseBySymbol = new Map();
   const prevDayVolumeBySymbol = new Map();
+  const prevDayTailBySymbol = new Map();
   const dayOpenBySymbol = new Map();
   const CONCURRENCY = 15;
   const symbolsForPrevDay = [...symbolToToken.keys()];
@@ -156,7 +199,47 @@ async function main() {
       console.error('Prev day progress:', batchNum, '/', totalBatches, '| prev close:', prevCloseBySymbol.size, '| prev volume:', prevDayVolumeBySymbol.size);
     }
   }
-  console.error('Prev day done:', prevDayVolumeBySymbol.size, 'symbols (daily only; holidays handled)');
+  // Fix #1: retry once for any symbols that failed the daily volume fetch
+  const missingVol = symbolsForPrevDay.filter(s => !prevDayVolumeBySymbol.has(s));
+  if (missingVol.length > 0) {
+    console.error(`Daily volume missing for ${missingVol.length} symbols — retrying in 2s...`);
+    await new Promise(r => setTimeout(r, 2000));
+    for (let i = 0; i < missingVol.length; i += CONCURRENCY) {
+      const chunk = missingVol.slice(i, i + CONCURRENCY);
+      await Promise.all(chunk.map(async (symbol) => {
+        try {
+          const token = symbolToToken.get(symbol);
+          const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
+          if (candles && candles.length > 0) {
+            for (const c of candles) {
+              const d = candleDateStr(c);
+              if (d < todayStr) {
+                prevCloseBySymbol.set(symbol, c.close);
+                prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+              }
+            }
+          }
+        } catch { /* skip */ }
+      }));
+    }
+    const stillMissing = missingVol.filter(s => !prevDayVolumeBySymbol.has(s));
+    console.error(`After retry: ${prevDayVolumeBySymbol.size} symbols have daily volume; still missing: ${stillMissing.length}`);
+  }
+  console.error('Prev day daily OHLCV done:', prevDayVolumeBySymbol.size, '/', symbolsForPrevDay.length, 'symbols have volume.');
+
+  // Fix #2: load prev day 3m tail bars from local CSV cache so EMA20 is seeded from bar 0 of today
+  const prevDateFolder = findPrevDateFolder(todayStr);
+  if (prevDateFolder) {
+    console.error(`Loading prev day 3m tails from ${prevDateFolder} for EMA seeding...`);
+    let tailCount = 0;
+    for (const symbol of symbolsForPrevDay) {
+      const tail = loadPrevDayTailBars(symbol, prevDateFolder);
+      if (tail.length > 0) { prevDayTailBySymbol.set(symbol, tail); tailCount++; }
+    }
+    console.error(`Prev day 3m tails loaded: ${tailCount}/${symbolsForPrevDay.length} symbols (${prevDateFolder})`);
+  } else {
+    console.error('No prev day date folder found in data/ — EMA will be seeded from today bars only');
+  }
 
   const todayFrom = new Date(`${todayStr}T00:00:00+05:30`);
   const todayTo = new Date(`${todayStr}T23:59:59+05:30`);
@@ -201,50 +284,153 @@ async function main() {
   let lastHeartbeat = 0;
   let tickCount = 0;
 
+  // ── helpers ────────────────────────────────────────────────────────────────
+  function pnlStr(pnl) {
+    return pnl >= 0 ? `+₹${pnl.toFixed(2)}` : `-₹${Math.abs(pnl).toFixed(2)}`;
+  }
+
+  function logSummary(label) {
+    const t = getTotalPnl();
+    const msg = `${label} | realized=${pnlStr(t.realizedPnl)} | closed=${t.closedCount}(${t.wins}W/${t.losses}L) open=${t.openCount}`;
+    console.error(msg);
+    logToFile('summary', { label, ...t });
+  }
+
+  // ── EOD sweep at 15:30 IST ─────────────────────────────────────────────────
+  const todayISTForEod = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const eodSweepAt = new Date(`${todayISTForEod}T15:30:00+05:30`);
+  const msToEod = eodSweepAt.getTime() - Date.now();
+  if (msToEod > 0) {
+    setTimeout(() => {
+      const swept = eodSweep(todayISTForEod);
+      if (swept.length > 0) {
+        console.error(`[EOD_SWEEP] Force-closed ${swept.length} positions that had no 15:24 bar`);
+        for (const p of swept) {
+          console.error(`  ${p.symbol} #${p.id} → eod_sweep @ ${p.exitPrice} | P&L ${pnlStr(p.pnl)}`);
+          logToFile('exit', { symbol: p.symbol, date: todayISTForEod, time: '15:30', id: p.id, reason: 'eod_sweep', exitPrice: p.exitPrice, qty: p.qty, pnl: p.pnl });
+        }
+        logSummary('EOD_SWEEP');
+      }
+    }, msToEod);
+  }
+
+  // ── bar-close callback ─────────────────────────────────────────────────────
   const builder = createCandleBuilder((bar) => {
     const { symbol, date, time, open, high, low, close, volume } = bar;
     barsClosedCount++;
+
+    // ── heartbeat every 5 min ──
     const now = Date.now();
     if (now - lastHeartbeat >= 5 * 60 * 1000) {
       lastHeartbeat = now;
+      const t = getTotalPnl();
       const symCount = seriesBySymbol.size;
-      const msg = `bars=${barsClosedCount} symbols=${symCount} ticks=${tickCount}`;
+      const msg = `bars=${barsClosedCount} symbols=${symCount} ticks=${tickCount} | realized=${pnlStr(t.realizedPnl)} closed=${t.closedCount} open=${t.openCount}`;
       console.error(`[heartbeat] ${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | ${msg}`);
-      logToFile('heartbeat', msg);
+      logToFile('heartbeat', { bars: barsClosedCount, symbols: symCount, ticks: tickCount, ...t });
     }
-    let series = seriesBySymbol.get(symbol);
-    if (!series) {
-      series = {};
-      seriesBySymbol.set(symbol, series);
-    }
-    if (!series[date]) series[date] = [];
-    const candle = { date, time, open, high, low, close, volume };
-    series[date].push(candle);
 
-    const byDate = { [date]: series[date] };
-    const sortedDates = [date];
+    // ── grow today's bar series ──
+    let series = seriesBySymbol.get(symbol);
+    if (!series) { series = {}; seriesBySymbol.set(symbol, series); }
+    if (!series[date]) series[date] = [];
+    series[date].push({ date, time, open, high, low, close, volume });
+
+    // log every bar to file — only for symbols that HAVE/HAD a position today (keeps log focused)
+    logToFile('bar', { symbol, date, time, open, high, low, close, volume });
+
+    // ── STEP 1: process exits for existing open positions ──────────────────
+    const exitResults = processBar(bar);
+    for (const r of exitResults) {
+      const pos = r.position;
+      switch (r.action) {
+        case 'exit_initial_sl': {
+          const msg = `[EXIT] ${symbol} #${pos.id} INITIAL_SL @ ${time} | bar.low=${low} <= SL=${r.exitPrice} | qty=${r.qty} | P&L ${pnlStr(r.pnl)}`;
+          console.error(msg);
+          logToFile('exit', { symbol, date, time, id: pos.id, reason: 'initial_sl', barLow: low, exitPrice: r.exitPrice, qty: r.qty, pnl: r.pnl });
+          logSummary('after_exit');
+          sendAlert(`EXIT ${symbol} #${pos.id} SL hit @ ${r.exitPrice} | P&L ${pnlStr(r.pnl)}`);
+          break;
+        }
+        case 'exit_trail': {
+          const msg = `[EXIT] ${symbol} #${pos.id} TRAIL_STOP @ ${time} | close=${close} <= trail=${r.trailLevel} (hwm=${r.hwm}) | qty=${r.qty} | P&L ${pnlStr(r.pnl)}`;
+          console.error(msg);
+          logToFile('exit', { symbol, date, time, id: pos.id, reason: 'trail_stop', close, trailLevel: r.trailLevel, hwm: r.hwm, exitPrice: r.exitPrice, qty: r.qty, pnl: r.pnl });
+          logSummary('after_exit');
+          sendAlert(`EXIT ${symbol} #${pos.id} trail stop @ ${r.exitPrice} | P&L ${pnlStr(r.pnl)}`);
+          break;
+        }
+        case 'exit_eod': {
+          const msg = `[EXIT] ${symbol} #${pos.id} EOD @ ${time} | close=${close} | qty=${r.qty} | P&L ${pnlStr(r.pnl)}`;
+          console.error(msg);
+          logToFile('exit', { symbol, date, time, id: pos.id, reason: 'eod', exitPrice: r.exitPrice, qty: r.qty, pnl: r.pnl });
+          logSummary('after_eod_exit');
+          sendAlert(`EXIT ${symbol} #${pos.id} EOD @ ${r.exitPrice} | P&L ${pnlStr(r.pnl)}`);
+          break;
+        }
+        case 'first_target_hit': {
+          const msg = `[TARGET] ${symbol} #${pos.id} 3% TARGET HIT @ ${time} | close=${close} >= ${r.firstTargetPrice} | unrealized=${pnlStr(r.unrealizedPnl)} | trailing from hwm=${r.hwm}`;
+          console.error(msg);
+          logToFile('first_target', { symbol, date, time, id: pos.id, close, firstTargetPrice: r.firstTargetPrice, unrealizedPnl: r.unrealizedPnl, hwm: r.hwm });
+          sendAlert(`TARGET ${symbol} #${pos.id} 3% hit @ ${close} — now trailing`);
+          break;
+        }
+        case 'hold_trail':
+          logToFile('position_bar', { symbol, date, time, id: pos.id, mode: 'trail', close, high, hwm: r.hwm, trailLevel: r.trailLevel, unrealizedPnl: r.unrealizedPnl, qty: r.qty });
+          break;
+        case 'hold':
+          logToFile('position_bar', { symbol, date, time, id: pos.id, mode: 'initial', close, high, low, stop: r.stop, firstTargetPrice: r.firstTargetPrice, unrealizedPnl: r.unrealizedPnl, qty: r.qty });
+          break;
+      }
+    }
+
+    // ── STEP 2: look for new entries ───────────────────────────────────────
+    const prevTail = prevDayTailBySymbol.get(symbol);
+    const prevDate = prevTail && prevTail.length > 0 ? prevTail[0].date : null;
+    const byDate = prevDate ? { [prevDate]: prevTail, [date]: series[date] } : { [date]: series[date] };
+    const sortedDates = prevDate ? [prevDate, date] : [date];
+
     const maxEntryCandleRangePct = process.env.MAX_ENTRY_CANDLE_RANGE_PCT != null ? parseFloat(process.env.MAX_ENTRY_CANDLE_RANGE_PCT) : 1.5;
-    const maxSlPct = process.env.MAX_SL_PCT != null ? parseFloat(process.env.MAX_SL_PCT) : 2;
-    const maxPullbackPct = process.env.MAX_PULLBACK_PCT != null ? parseFloat(process.env.MAX_PULLBACK_PCT) : 5;
+    const maxSlPct               = process.env.MAX_SL_PCT != null               ? parseFloat(process.env.MAX_SL_PCT)               : 2;
+    const maxPullbackPct         = process.env.MAX_PULLBACK_PCT != null         ? parseFloat(process.env.MAX_PULLBACK_PCT)         : 5;
     const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
+    const minVolRatio            = process.env.MIN_VOLUME_RATIO != null         ? parseFloat(process.env.MIN_VOLUME_RATIO)         : null;
+
+    // collect internal filter skips — logged to file for EOD debug
+    const skipReasons = [];
+    const onSkip = (reason) => skipReasons.push(reason);
+
     const opts = {
       lookback: 15, maxRangePct: 2, tolerancePct: 1, sharpMovePct: 4, pullbackNearPct: 2, maxPerDay: 2,
-      maxGapUpPct: gapUpThresholdPct ?? undefined, maxEntryCandleRangePct, maxSlPct, maxPullbackPct, maxConsolidationRangePct,
-      getPrevDayVolume: () => prevDayVolumeBySymbol.get(symbol) ?? null,
+      maxGapUpPct: gapUpThresholdPct ?? undefined,
+      maxEntryCandleRangePct, maxSlPct, maxPullbackPct, maxConsolidationRangePct,
+      getPrevDayVolume: () => {
+        const v = prevDayVolumeBySymbol.get(symbol);
+        if (v != null) return v;
+        const tail = prevDayTailBySymbol.get(symbol);
+        return tail && tail.length > 0 ? tail.reduce((s, b) => s + (b.volume ?? 0), 0) : null;
+      },
       getPrevDayCloseDaily: () => prevCloseBySymbol.get(symbol) ?? null,
-      getDayOpenDaily: () => dayOpenBySymbol.get(symbol) ?? null,
+      getDayOpenDaily:      () => dayOpenBySymbol.get(symbol) ?? null,
+      onSkip,
     };
-    const { breakouts, pullbacks, reversalBreakouts } = runEntryLogic(byDate, sortedDates, opts);
 
-    const minVolRatio = process.env.MIN_VOLUME_RATIO != null ? parseFloat(process.env.MIN_VOLUME_RATIO) : null;
+    const { reversalBreakouts } = runEntryLogic(byDate, sortedDates, opts);
+
+    // log internal skips to file (only when at least one was generated this bar)
+    if (skipReasons.length > 0) {
+      logToFile('skip_internal', { symbol, date, time, reasons: skipReasons });
+    }
+
     const toEmit = [];
     for (const r of reversalBreakouts) {
       if (r.time !== time) continue;
+
+      // ── external gap filter ──
       if (gapUpThresholdPct != null && Number.isFinite(gapUpThresholdPct)) {
         const dayOpen = dayOpenBySymbol.get(symbol);
         if (dayOpen == null) {
-          const reason = 'today open not loaded yet (wait until 9:20 IST)';
-          console.error(`[skip] ${symbol} reversal breakout skipped: ${reason}`);
+          const reason = 'today_open_not_loaded';
           logToFile('skip', { symbol, date, time, reason });
           continue;
         }
@@ -252,47 +438,49 @@ async function main() {
         if (prevClose != null && prevClose > 0 && dayOpen > prevClose) {
           const gapPct = ((dayOpen - prevClose) / prevClose) * 100;
           if (gapPct >= gapUpThresholdPct) {
-            const reason = `gap ${gapPct.toFixed(1)}% >= ${gapUpThresholdPct}% (daily: prev close vs today open)`;
-            console.error(`[skip] ${symbol} reversal breakout skipped: ${reason}`);
-            logToFile('skip', { symbol, date, time, reason });
+            const reason = `gap_filter_${gapPct.toFixed(1)}pct >= ${gapUpThresholdPct}pct`;
+            console.error(`[skip] ${symbol} @ ${time} | ${reason}`);
+            logToFile('skip', { symbol, date, time, reason, gapPct, gapUpThresholdPct });
             continue;
           }
         }
       }
+
+      // ── external volume ratio filter ──
       if (minVolRatio != null && Number.isFinite(minVolRatio)) {
         const consAvg = r.consolidationAvgVolume ?? 0;
         const ratio = consAvg > 0 ? (r.entryBarVolume ?? 0) / consAvg : 0;
         if (ratio < minVolRatio) {
-          const reason = `volume ratio ${ratio.toFixed(2)} < ${minVolRatio}`;
-          console.error(`[skip] ${symbol} reversal breakout skipped: ${reason}`);
-          logToFile('skip', { symbol, date, time, reason });
+          const reason = `vol_ratio_${ratio.toFixed(2)} < ${minVolRatio}`;
+          console.error(`[skip] ${symbol} @ ${time} | ${reason}`);
+          logToFile('skip', { symbol, date, time, reason, volRatio: ratio, minVolRatio });
           continue;
         }
       }
+
       toEmit.push({ type: 'REVERSAL_BREAKOUT', ...r });
     }
 
+    // ── emit signals ──
     for (const sig of toEmit) {
       const key = `${symbol}|${date}|${sig.type}|${time}`;
       if (signaled.has(key)) continue;
       signaled.add(key);
 
       const entryPrice = sig.suggestedEntry ?? sig.close;
-      const stop = sig.suggestedStop ?? (sig.ema20 != null ? Math.round(sig.ema20 * 0.995 * 100) / 100 : entryPrice * 0.99);
-      const target = computeTarget(entryPrice, stop);
-      addPosition({
-        symbol,
-        side: 'long',
-        entryTime: `${date} ${time}`,
-        entryPrice,
-        stop,
-        target,
-        signalType: sig.type,
-      });
-      const msg = `${symbol} ${sig.type} @ ${time} – Entry ${entryPrice}, SL ${stop}, Target ${target}`;
-      console.error('[SIGNAL]', msg);
-      logToFile('signal', { symbol, date, time, entry: entryPrice, stop, target });
-      sendAlert(msg);
+      const stop       = sig.suggestedStop  ?? (sig.ema20 != null ? Math.round(sig.ema20 * 0.995 * 100) / 100 : entryPrice * 0.99);
+      const target     = computeTarget(entryPrice, stop);
+      const slPct      = entryPrice > 0 ? ((entryPrice - stop) / entryPrice * 100).toFixed(2) : '?';
+      const qty        = Math.floor(POSITION_VALUE / entryPrice);
+      const prevVol    = prevDayVolumeBySymbol.get(symbol) ?? null;
+      const cumVol     = series[date].reduce((s, b) => s + (b.volume ?? 0), 0);
+
+      const pos = addPosition({ symbol, side: 'long', entryTime: `${date} ${time}`, entryPrice, stop, target, signalType: sig.type });
+
+      const msg = `[ENTRY] ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} (${slPct}%) target=${target} | qty=${qty} | cumVol=${cumVol} prevDayVol=${prevVol ?? 'n/a'}`;
+      console.error(msg);
+      logToFile('entry', { symbol, date, time, id: pos.id, entry: entryPrice, stop, target, slPct: parseFloat(slPct), qty, cumVol, prevDayVol: prevVol });
+      sendAlert(`ENTRY ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} target=${target}`);
     }
   });
 
