@@ -392,6 +392,7 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
   const maxSlPct = process.env.MAX_SL_PCT != null ? parseFloat(process.env.MAX_SL_PCT) : 2;
   const maxPullbackPct = process.env.MAX_PULLBACK_PCT != null ? parseFloat(process.env.MAX_PULLBACK_PCT) : 5;
   const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
+  const maxEntryTime = process.env.MAX_ENTRY_TIME ?? null;
   const fetchDelayMs = parseInt(process.env.LOAD_DELAY_MS, 10) || 1000;
   let lastFetchTime = 0;
   const signals = [];
@@ -449,7 +450,7 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
     const getDayOpenDaily = (dayOpenDaily != null ? () => dayOpenDaily : (dayOpenFrom3m != null ? () => dayOpenFrom3m : null));
     const skipReasons = [];
     const onSkip = (r) => skipReasons.push(r);
-    const entries = findReversalBreakouts(byDate, sortedDates, 4, 2, maxGapUpPct, maxEntryCandleRangePct, maxSlPct, getPrevDayVolume, maxPullbackPct, maxConsolidationRangePct, getPrevDayCloseDaily, getDayOpenDaily, onSkip);
+    const entries = findReversalBreakouts(byDate, sortedDates, 4, 2, maxGapUpPct, maxEntryCandleRangePct, maxSlPct, getPrevDayVolume, maxPullbackPct, maxConsolidationRangePct, getPrevDayCloseDaily, getDayOpenDaily, onSkip, maxEntryTime);
     const minVolRatio = process.env.MIN_VOLUME_RATIO != null ? parseFloat(process.env.MIN_VOLUME_RATIO) : null;
     if (!entries.some((e) => e.date === forDate) && skipReasons.length > 0) {
       const last = [...new Set(skipReasons)].slice(-3);

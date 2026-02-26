@@ -1,27 +1,87 @@
 {
   "date": "2026-02-19",
-  "runAt": "2026-02-25T13:17:07.762Z",
-  "totalPnl": 1987.18,
-  "totalCapitalDeployed": 59676.2,
+  "runAt": "2026-02-26T15:19:49.347Z",
+  "totalPnl": 384.66999999999996,
+  "totalCapitalDeployed": 237516.21,
   "counts": {
-    "total": 2,
-    "stop": 2,
+    "total": 8,
+    "stop": 7,
     "target": 0,
-    "eod": 0,
+    "eod": 1,
     "noData": 0
   },
   "trades": [
     {
-      "symbol": "NEWGEN",
+      "symbol": "GODREJIND",
       "date": "2026-02-19",
-      "time": "10:57:00",
-      "entry": 607.4,
-      "stop": 594.36,
-      "target": 633.48,
-      "qty": 49,
+      "time": "10:21:00",
+      "entry": 1023.15,
+      "stop": 1008.13,
+      "target": 1053.19,
+      "qty": 29,
       "exitReason": "stop",
-      "exitPrice": 627.94,
-      "pnl": 1006.46
+      "exitPrice": 1046.91,
+      "pnl": 689.04
+    },
+    {
+      "symbol": "NCC",
+      "date": "2026-02-19",
+      "time": "10:51:00",
+      "entry": 148.26,
+      "stop": 146.38,
+      "target": 152.02,
+      "qty": 202,
+      "exitReason": "eod",
+      "exitPrice": 151.84,
+      "pnl": 723.16
+    },
+    {
+      "symbol": "INOXGREEN",
+      "date": "2026-02-19",
+      "time": "10:39:00",
+      "entry": 182.19,
+      "stop": 180.1,
+      "target": 186.37,
+      "qty": 164,
+      "exitReason": "stop",
+      "exitPrice": 180.1,
+      "pnl": -342.76
+    },
+    {
+      "symbol": "PICCADIL",
+      "date": "2026-02-19",
+      "time": "10:39:00",
+      "entry": 636.7,
+      "stop": 625.76,
+      "target": 658.58,
+      "qty": 47,
+      "exitReason": "stop",
+      "exitPrice": 625.76,
+      "pnl": -514.18
+    },
+    {
+      "symbol": "MANINDS",
+      "date": "2026-02-19",
+      "time": "10:48:00",
+      "entry": 433.05,
+      "stop": 428.3,
+      "target": 442.55,
+      "qty": 69,
+      "exitReason": "stop",
+      "exitPrice": 428.3,
+      "pnl": -327.75
+    },
+    {
+      "symbol": "SUMMITSEC",
+      "date": "2026-02-19",
+      "time": "10:33:00",
+      "entry": 1769.3,
+      "stop": 1744.04,
+      "target": 1819.82,
+      "qty": 16,
+      "exitReason": "stop",
+      "exitPrice": 1744.04,
+      "pnl": -404.16
     },
     {
       "symbol": "NITINSPIN",
@@ -34,6 +94,18 @@
       "exitReason": "stop",
       "exitPrice": 376.76,
       "pnl": 980.72
+    },
+    {
+      "symbol": "RICOAUTO",
+      "date": "2026-02-19",
+      "time": "11:03:00",
+      "entry": 128.71,
+      "stop": 126.91,
+      "target": 132.31,
+      "qty": 233,
+      "exitReason": "stop",
+      "exitPrice": 126.91,
+      "pnl": -419.4
     }
   ]
 }

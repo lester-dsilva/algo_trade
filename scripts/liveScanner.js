@@ -106,10 +106,10 @@ function findPrevDateFolder(todayStr) {
 }
 
 /**
- * Load the last nBars 3m candles for symbol from data/<prevDateFolder>/<symbol>.csv.
+ * Load ALL 3m candles for symbol from data/<prevDateFolder>/<symbol>.csv.
  * Returns [] if file not found or on any error.
  */
-function loadPrevDayTailBars(symbol, prevDateFolder, nBars = 25) {
+function loadPrevDayAllBars(symbol, prevDateFolder) {
   const file = normalizeSymbolFilename(symbol) + '.csv';
   const csvPath = path.join(process.cwd(), 'data', prevDateFolder, file);
   try {
@@ -126,8 +126,17 @@ function loadPrevDayTailBars(symbol, prevDateFolder, nBars = 25) {
       if (!r.date || !Number.isFinite(o) || o === 0) continue;
       rows.push({ date: r.date, time: r.time, open: o, high: h2, low: l, close: c, volume: Number.isFinite(v) ? v : 0 });
     }
-    return rows.slice(-nBars);
+    return rows;
   } catch { return []; }
+}
+
+/**
+ * Load the last nBars 3m candles for symbol from data/<prevDateFolder>/<symbol>.csv.
+ * Returns [] if file not found or on any error.
+ */
+function loadPrevDayTailBars(symbol, prevDateFolder, nBars = 25) {
+  const all = loadPrevDayAllBars(symbol, prevDateFolder);
+  return all.slice(-nBars);
 }
 
 async function main() {
@@ -161,7 +170,8 @@ async function main() {
 
   const gapUpThresholdPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
   const prevCloseBySymbol = new Map();
-  const prevDayVolumeBySymbol = new Map();
+  const prevDayVolumeBySymbol = new Map();   // from daily OHLCV API (fallback)
+  const prevDay3mVolBySymbol  = new Map();   // sum of prev day 3m CSV bars (primary — same source as analyzePnl)
   const prevDayTailBySymbol = new Map();
   const dayOpenBySymbol = new Map();
   const CONCURRENCY = 15;
@@ -227,18 +237,23 @@ async function main() {
   }
   console.error('Prev day daily OHLCV done:', prevDayVolumeBySymbol.size, '/', symbolsForPrevDay.length, 'symbols have volume.');
 
-  // Fix #2: load prev day 3m tail bars from local CSV cache so EMA20 is seeded from bar 0 of today
+  // Fix #2: load prev day 3m bars from local CSV cache — tail for EMA seeding, full sum for volume filter
   const prevDateFolder = findPrevDateFolder(todayStr);
   if (prevDateFolder) {
-    console.error(`Loading prev day 3m tails from ${prevDateFolder} for EMA seeding...`);
-    let tailCount = 0;
+    console.error(`Loading prev day 3m data from ${prevDateFolder} (tail for EMA, full sum for volume filter)...`);
+    let tailCount = 0, volCount = 0;
     for (const symbol of symbolsForPrevDay) {
-      const tail = loadPrevDayTailBars(symbol, prevDateFolder);
-      if (tail.length > 0) { prevDayTailBySymbol.set(symbol, tail); tailCount++; }
+      const allBars = loadPrevDayAllBars(symbol, prevDateFolder);
+      if (allBars.length > 0) {
+        prevDayTailBySymbol.set(symbol, allBars.slice(-25));
+        tailCount++;
+        const totalVol = allBars.reduce((s, b) => s + (b.volume ?? 0), 0);
+        if (totalVol > 0) { prevDay3mVolBySymbol.set(symbol, totalVol); volCount++; }
+      }
     }
-    console.error(`Prev day 3m tails loaded: ${tailCount}/${symbolsForPrevDay.length} symbols (${prevDateFolder})`);
+    console.error(`Prev day 3m loaded: ${tailCount} tails (EMA), ${volCount} volume sums (volume filter) from ${prevDateFolder}`);
   } else {
-    console.error('No prev day date folder found in data/ — EMA will be seeded from today bars only');
+    console.error('No prev day date folder found in data/ — EMA unset, volume filter will fall back to daily API');
   }
 
   const todayFrom = new Date(`${todayStr}T00:00:00+05:30`);
@@ -395,6 +410,7 @@ async function main() {
     const maxPullbackPct         = process.env.MAX_PULLBACK_PCT != null         ? parseFloat(process.env.MAX_PULLBACK_PCT)         : 5;
     const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
     const minVolRatio            = process.env.MIN_VOLUME_RATIO != null         ? parseFloat(process.env.MIN_VOLUME_RATIO)         : null;
+    const maxEntryTime           = process.env.MAX_ENTRY_TIME ?? null;
 
     // collect internal filter skips — logged to file for EOD debug
     const skipReasons = [];
@@ -403,12 +419,13 @@ async function main() {
     const opts = {
       lookback: 15, maxRangePct: 2, tolerancePct: 1, sharpMovePct: 4, pullbackNearPct: 2, maxPerDay: 2,
       maxGapUpPct: gapUpThresholdPct ?? undefined,
-      maxEntryCandleRangePct, maxSlPct, maxPullbackPct, maxConsolidationRangePct,
+      maxEntryCandleRangePct, maxSlPct, maxPullbackPct, maxConsolidationRangePct, maxEntryTime,
       getPrevDayVolume: () => {
-        const v = prevDayVolumeBySymbol.get(symbol);
-        if (v != null) return v;
-        const tail = prevDayTailBySymbol.get(symbol);
-        return tail && tail.length > 0 ? tail.reduce((s, b) => s + (b.volume ?? 0), 0) : null;
+        // Primary: full prev day 3m CSV sum — same source as analyzePnl for consistency
+        const csv3mVol = prevDay3mVolBySymbol.get(symbol);
+        if (csv3mVol != null) return csv3mVol;
+        // Fallback: daily OHLCV API (includes opening auction; only used if CSV missing)
+        return prevDayVolumeBySymbol.get(symbol) ?? null;
       },
       getPrevDayCloseDaily: () => prevCloseBySymbol.get(symbol) ?? null,
       getDayOpenDaily:      () => dayOpenBySymbol.get(symbol) ?? null,
