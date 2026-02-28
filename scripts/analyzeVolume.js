@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { toNum, groupByDate, findReversalBreakouts } from '../lib/entryLogic.js';
+import { toNum, groupByDate, findMomentumBreakouts } from '../lib/entryLogic.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DEFAULT_FROM = '2026-01-27';
@@ -156,7 +156,7 @@ function main() {
     }
     const byDate = groupByDate(rows);
     const sortedDates = Object.keys(byDate).sort();
-    const entries = findReversalBreakouts(byDate, sortedDates);
+    const entries = findMomentumBreakouts(byDate, sortedDates);
     const avgBarPrev = prevDaysAvgBarVolume(byDate, sortedDates, sortedDates[0]);
     for (const e of entries) {
       const candles = byDate[e.date];

@@ -12,7 +12,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { toNum, groupByDate, findReversalBreakouts } from '../lib/entryLogic.js';
+import { toNum, groupByDate, findMomentumBreakouts } from '../lib/entryLogic.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DEFAULT_FROM = '2026-02-19';
@@ -139,7 +139,12 @@ function main() {
     const maxGapUpPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
     const maxEntryCandleRangePct = process.env.MAX_ENTRY_CANDLE_RANGE_PCT != null ? parseFloat(process.env.MAX_ENTRY_CANDLE_RANGE_PCT) : 1.5;
     const maxSlPct = process.env.MAX_SL_PCT != null ? parseFloat(process.env.MAX_SL_PCT) : 2;
-    const entries = findReversalBreakouts(byDate, sortedDates, 4, 2, maxGapUpPct, maxEntryCandleRangePct, maxSlPct);
+    const entries = findMomentumBreakouts(byDate, sortedDates, {
+      sharpMovePct: 4,
+      maxSlPct,
+      maxGapUpPct,
+      maxEntryCandleRangePct,
+    });
     const minVolRatio = process.env.MIN_VOLUME_RATIO != null ? parseFloat(process.env.MIN_VOLUME_RATIO) : null;
     for (const e of entries) {
       if (minVolRatio != null && Number.isFinite(minVolRatio)) {

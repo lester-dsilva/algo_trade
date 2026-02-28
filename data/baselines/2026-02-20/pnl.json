@@ -1,111 +1,27 @@
 {
   "date": "2026-02-20",
-  "runAt": "2026-02-26T15:19:52.588Z",
-  "totalPnl": 1100.28,
-  "totalCapitalDeployed": 230874.41999999998,
+  "runAt": "2026-02-28T15:14:02.236Z",
+  "totalPnl": 65.6,
+  "totalCapitalDeployed": 29476.95,
   "counts": {
-    "total": 8,
-    "stop": 4,
+    "total": 1,
+    "stop": 0,
     "target": 0,
-    "eod": 4,
+    "eod": 1,
     "noData": 0
   },
   "trades": [
     {
-      "symbol": "ABB",
-      "date": "2026-02-20",
-      "time": "10:21:00",
-      "entry": 6059,
-      "stop": 5960.05,
-      "target": 6256.9,
-      "qty": 4,
-      "exitReason": "stop",
-      "exitPrice": 6151.33,
-      "pnl": 369.32
-    },
-    {
-      "symbol": "BDL",
-      "date": "2026-02-20",
-      "time": "10:30:00",
-      "entry": 1317.2,
-      "stop": 1300.76,
-      "target": 1350.08,
-      "qty": 22,
-      "exitReason": "eod",
-      "exitPrice": 1308.5,
-      "pnl": -191.4
-    },
-    {
-      "symbol": "TVSHLTD",
-      "date": "2026-02-20",
-      "time": "10:39:00",
-      "entry": 14150,
-      "stop": 13979.75,
-      "target": 14490.5,
-      "qty": 2,
-      "exitReason": "eod",
-      "exitPrice": 14201,
-      "pnl": 102
-    },
-    {
       "symbol": "YATHARTH",
       "date": "2026-02-20",
-      "time": "10:51:00",
-      "entry": 709.4,
-      "stop": 699.14,
-      "target": 729.92,
-      "qty": 42,
+      "time": "12:03:00",
+      "entry": 718.95,
+      "stop": 708.68,
+      "target": 739.49,
+      "qty": 41,
       "exitReason": "eod",
       "exitPrice": 720.55,
-      "pnl": 468.3
-    },
-    {
-      "symbol": "PARAS",
-      "date": "2026-02-20",
-      "time": "10:45:00",
-      "entry": 646.1,
-      "stop": 639.54,
-      "target": 659.22,
-      "qty": 46,
-      "exitReason": "stop",
-      "exitPrice": 639.54,
-      "pnl": -301.76
-    },
-    {
-      "symbol": "BALAJITELE",
-      "date": "2026-02-20",
-      "time": "10:57:00",
-      "entry": 98.95,
-      "stop": 98.15,
-      "target": 100.55,
-      "qty": 303,
-      "exitReason": "eod",
-      "exitPrice": 99.89,
-      "pnl": 284.82
-    },
-    {
-      "symbol": "AURUM",
-      "date": "2026-02-20",
-      "time": "11:00:00",
-      "entry": 185.5,
-      "stop": 184.27,
-      "target": 187.96,
-      "qty": 161,
-      "exitReason": "stop",
-      "exitPrice": 184.27,
-      "pnl": -198.03
-    },
-    {
-      "symbol": "ABINFRA",
-      "date": "2026-02-20",
-      "time": "10:48:00",
-      "entry": 21.69,
-      "stop": 21.49,
-      "target": 22.09,
-      "qty": 1383,
-      "exitReason": "stop",
-      "exitPrice": 22.1,
-      "pnl": 567.03
+      "pnl": 65.6
     }
   ]
 }

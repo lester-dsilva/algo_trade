@@ -1,6 +1,6 @@
 /**
  * Quick filter-tuning script.
- * Reads existing 3m CSVs for all 6 backtest dates, runs findReversalBreakouts
+ * Reads existing 3m CSVs for all 6 backtest dates, runs findMomentumBreakouts
  * with the current .env settings, then shows how each additional filter
  * (MIN_VOLUME_RATIO, MAX_CONSOLIDATION_RANGE_PCT, earlier time cutoff)
  * would change trade counts and simulated PnL.
@@ -11,7 +11,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
-import { findReversalBreakouts } from '../lib/entryLogic.js';
+import { findMomentumBreakouts } from '../lib/entryLogic.js';
 
 const require = createRequire(import.meta.url);
 
@@ -114,15 +114,18 @@ for (const forDate of DATES) {
     // prev day 3m volume sum (same as liveScanner/analyzePnl)
     const prevDayVol = prevBars.reduce((s, b) => s + (b.volume || 0), 0);
 
-    const entries = findReversalBreakouts(
-      byDate, sortedDates,
-      4, 2,
-      maxGapUpPct, maxEntryCandleRangePct, maxSlPct,
-      () => prevDayVol > 0 ? prevDayVol : null,
-      maxPullbackPct, maxConsolidationRangePct,
-      null, null, null,
-      maxEntryTime
-    );
+    const entries = findMomentumBreakouts(byDate, sortedDates, {
+      sharpMovePct: 4,
+      maxSlPct,
+      getPrevDayVolume: () => prevDayVol > 0 ? prevDayVol : null,
+      maxEntryTime,
+      maxGapUpPct,
+      maxEntryCandleRangePct,
+      structureBars: 7,
+      maxConsolidationRangePct,
+      minBreakoutVolumeRatio: 2,
+      stopBelowStructurePct: 0.2,
+    });
 
     for (const e of entries) {
       if (e.date !== forDate) continue;

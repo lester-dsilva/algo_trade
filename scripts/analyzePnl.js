@@ -1,13 +1,15 @@
 /**
- * Parse live_scanner.log for "signal" entries, fetch 3m data, simulate P&L:
- * - Position size: ₹30,000 per entry (qty = floor(30000/entry))
- * - First target: 3% above entry (trigger only; we don't exit there). Then trail: exit when price falls 1.5% from the high since 3% was hit.
- * - Exit: initial stop (before 3%), or 1.5% trail from high (after 3%), or EOD square-off at 15:25
+ * Parse live_scanner.log for "signal" or "entry" entries, fetch 3m data, simulate P&L.
+ * Kept in sync with liveScanner.js and lib/positionStore.js:
+ * - Position size, first target 3%, trail 1.5%, EOD 15:24 → imported from positionStore
+ * - Entry/stop/target logic and log format → same as liveScanner (entry event, symbol/date/time/entry/stop/target)
  *
  * Usage:
  *   node scripts/analyzePnl.js [logPath]           — P&L from log (no volume filter)
  *   node scripts/analyzePnl.js 2026-02-20          — P&L from entry logic for that date (with Daily Vol > prev day filter)
  *   node scripts/analyzePnl.js --today             — same but use today's date (IST)
+ *   node scripts/analyzePnl.js 2026-02-20 --save   — run P&L and save baseline for that date (use when establishing baseline)
+ *   node scripts/analyzePnl.js 2026-02-20          — run P&L and compare vs baseline (no save); use after improving logic
  */
 
 import 'dotenv/config';
@@ -15,13 +17,12 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { getKite } from '../lib/kite.js';
-import { groupByDate, findReversalBreakouts } from '../lib/entryLogic.js';
+import { groupByDate, findMomentumBreakouts } from '../lib/entryLogic.js';
+import { POSITION_VALUE, FIRST_TARGET_PCT, TRAIL_PCT, EOD_BAR_TIME } from '../lib/positionStore.js';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const BASELINES_DIR = path.join(DATA_DIR, 'baselines');
 const DEFAULT_LOG = path.join(DATA_DIR, 'live_scanner.log');
-const POSITION_VALUE = 30000;
-const EOD_BAR_TIME = '15:24'; // square off at 3:25 PM → use 15:24 bar close
 
 function computeTarget(entryPrice, stop) {
   const risk = entryPrice - stop;
@@ -75,14 +76,15 @@ function dateRange(fromStr, toStr) {
   return out;
 }
 
-/** Parse live_scanner.log; return array of { symbol, date, time, entry, stop, target } */
+/** Parse live_scanner.log; return array of { symbol, date, time, entry, stop, target }.
+ *  Accepts both "signal" and "entry" event types (liveScanner logs "entry"). */
 function parseSignalsFromLog(logPath) {
   if (!fs.existsSync(logPath)) return [];
   const text = fs.readFileSync(logPath, 'utf8');
   const signals = [];
   for (const line of text.split(/\r?\n/)) {
     const parts = line.split('\t');
-    if (parts.length < 3 || parts[1] !== 'signal') continue;
+    if (parts.length < 3 || (parts[1] !== 'signal' && parts[1] !== 'entry')) continue;
     try {
       const d = JSON.parse(parts[2]);
       if (d.symbol && d.entry != null && d.stop != null && d.target != null) {
@@ -247,9 +249,6 @@ function writeCsvByDate(symbol, rows) {
   }
 }
 
-const FIRST_TARGET_PCT = 3;
-const TRAIL_PCT = 1.5;
-
 /**
  * Simulate one trade: first target 3% when bar closes >= 3%; then trail (1.5% from high) from the next bar only.
  * We wait for the candle to close before starting the trail so we don't exit in the same bar that hit 3%.
@@ -393,18 +392,11 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
   const maxPullbackPct = process.env.MAX_PULLBACK_PCT != null ? parseFloat(process.env.MAX_PULLBACK_PCT) : 5;
   const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
   const maxEntryTime = process.env.MAX_ENTRY_TIME ?? null;
-  const fetchDelayMs = parseInt(process.env.LOAD_DELAY_MS, 10) || 1000;
-  let lastFetchTime = 0;
   const signals = [];
   let idx = 0;
   for (const symbol of symbols) {
     idx++;
     console.error(`[${idx}/${symbols.length}] ${symbol} (3m: prev + ${forDate}, daily: gap)...`);
-    if (lastFetchTime > 0) {
-      const elapsed = Date.now() - lastFetchTime;
-      if (elapsed < fetchDelayMs) await new Promise((r) => setTimeout(r, fetchDelayMs - elapsed));
-    }
-    lastFetchTime = Date.now();
     let prevDayCloseDaily = null;
     let dayOpenDaily = null;
     let prevTradingDate = null;
@@ -450,7 +442,21 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
     const getDayOpenDaily = (dayOpenDaily != null ? () => dayOpenDaily : (dayOpenFrom3m != null ? () => dayOpenFrom3m : null));
     const skipReasons = [];
     const onSkip = (r) => skipReasons.push(r);
-    const entries = findReversalBreakouts(byDate, sortedDates, 4, 2, maxGapUpPct, maxEntryCandleRangePct, maxSlPct, getPrevDayVolume, maxPullbackPct, maxConsolidationRangePct, getPrevDayCloseDaily, getDayOpenDaily, onSkip, maxEntryTime);
+    const entries = findMomentumBreakouts(byDate, sortedDates, {
+      sharpMovePct: 4,
+      maxSlPct,
+      getPrevDayVolume,
+      getPrevDayCloseDaily,
+      getDayOpenDaily,
+      onSkip,
+      maxEntryTime,
+      maxGapUpPct,
+      maxEntryCandleRangePct,
+      structureBars: 7,
+      maxConsolidationRangePct,
+      minBreakoutVolumeRatio: process.env.MIN_BREAKOUT_VOLUME_RATIO != null ? parseFloat(process.env.MIN_BREAKOUT_VOLUME_RATIO) : 2,
+      stopBelowStructurePct: process.env.STOP_BELOW_STRUCTURE_PCT != null ? parseFloat(process.env.STOP_BELOW_STRUCTURE_PCT) : 0.2,
+    });
     const minVolRatio = process.env.MIN_VOLUME_RATIO != null ? parseFloat(process.env.MIN_VOLUME_RATIO) : null;
     if (!entries.some((e) => e.date === forDate) && skipReasons.length > 0) {
       const last = [...new Set(skipReasons)].slice(-3);
@@ -464,6 +470,7 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
         if (ratio < minVolRatio) continue;
       }
       const entryPrice = e.close;
+      // Same fallback as liveScanner: suggestedStop from logic, else entry*0.99 (no EMA)
       const stop = e.suggestedStop ?? entryPrice * 0.99;
       const target = computeTarget(entryPrice, stop);
       signals.push({
@@ -542,6 +549,17 @@ function runPnl(signals, from, to, sourceLabel) {
   };
 }
 
+/** Load baseline for a date from data/baselines/<date>/pnl.json. Returns null if missing. */
+function loadBaseline(forDate) {
+  const p = path.join(BASELINES_DIR, forDate, 'pnl.json');
+  try {
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
 function saveBaseline(forDate, symbols, summary) {
   const dir = path.join(BASELINES_DIR, forDate);
   try {
@@ -573,9 +591,31 @@ function saveBaseline(forDate, symbols, summary) {
   }
 }
 
+/** Print comparison of current run vs baseline (total PnL, counts). */
+function printBaselineComparison(forDate, summary, baseline) {
+  if (!baseline || baseline.totalPnl == null) return;
+  const cur = summary.totalPnl;
+  const base = baseline.totalPnl;
+  const diff = cur - base;
+  const diffStr = diff >= 0 ? `+${diff.toFixed(2)}` : diff.toFixed(2);
+  console.log('\n' + '='.repeat(60));
+  console.log('  vs BASELINE (data/baselines/' + forDate + '/pnl.json)');
+  console.log('='.repeat(60));
+  console.log(`  Baseline P&L:     ₹${base.toFixed(2)}  (${baseline.counts?.total ?? '?'} trades)`);
+  console.log(`  Current P&L:      ₹${cur.toFixed(2)}  (${summary.counts?.total ?? 0} trades)`);
+  console.log(`  Difference:       ₹${diffStr}  ${diff >= 0 ? '(improvement)' : '(regression)'}`);
+  if (baseline.counts && summary.counts) {
+    const c = summary.counts;
+    const b = baseline.counts;
+    console.log(`  Stops:  ${c.stop} (baseline ${b.stop})  |  Targets: ${c.target} (baseline ${b.target})  |  EOD: ${c.eod} (baseline ${b.eod})`);
+  }
+  console.log('='.repeat(60));
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const useToday = args.includes('--today');
+  const saveBaselineFlag = args.includes('--save');
   const dateArg = args.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
   const logPath = args.find((a) => a.endsWith('.log') || (!a.startsWith('--') && !/^\d{4}-\d{2}-\d{2}$/.test(a) && a.length > 3));
 
@@ -602,11 +642,9 @@ async function main() {
     console.error(`3m data: prev trading day + ${forDate} (volume filter from 3m bars)\n`);
 
     if (loadOnly) {
-      const loadDelayMs = parseInt(process.env.LOAD_DELAY_MS, 10) || 200;
       console.error(`Loading 3m data for ${symbols.length} symbols | ${from} only\n`);
       for (let i = 0; i < symbols.length; i++) {
         const symbol = symbols[i];
-        if (i > 0) await new Promise((r) => setTimeout(r, loadDelayMs));
         const rows = loadOrFetch(symbol, from, to, true);
         const file = normalizeFilename(symbol) + '.csv';
         const csvPath = path.join(DATA_DIR, to, file);
@@ -642,8 +680,17 @@ async function main() {
   }
 
   const summary = runPnl(signals, from, to, sourceLabel);
-  if (forDate && summary && symbols != null) {
-    saveBaseline(forDate, symbols, summary);
+  if (forDate && summary) {
+    if (saveBaselineFlag && symbols != null) {
+      saveBaseline(forDate, symbols, summary);
+    } else {
+      const baseline = loadBaseline(forDate);
+      if (baseline) {
+        printBaselineComparison(forDate, summary, baseline);
+      } else {
+        console.error(`\nNo baseline for ${forDate}. Run with --save to create one.`);
+      }
+    }
   }
 }
 

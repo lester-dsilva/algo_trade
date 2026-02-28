@@ -1,87 +1,63 @@
 {
   "date": "2026-02-23",
-  "runAt": "2026-02-23T12:32:25.358Z",
-  "totalPnl": 2862.34,
-  "totalCapitalDeployed": 178325.66,
+  "runAt": "2026-02-28T15:14:02.730Z",
+  "totalPnl": 1158.62,
+  "totalCapitalDeployed": 119634.03,
   "counts": {
-    "total": 6,
-    "stop": 2,
+    "total": 4,
+    "stop": 1,
     "target": 0,
-    "eod": 4,
+    "eod": 3,
     "noData": 0
   },
   "trades": [
     {
       "symbol": "BLUEJET",
       "date": "2026-02-23",
-      "time": "11:18:00",
-      "entry": 370,
-      "stop": 365.21,
-      "target": 379.58,
-      "qty": 81,
+      "time": "11:24:00",
+      "entry": 378.8,
+      "stop": 372.17,
+      "target": 392.06,
+      "qty": 79,
       "exitReason": "eod",
       "exitPrice": 391.4,
-      "pnl": 1733.4
+      "pnl": 995.4
     },
     {
-      "symbol": "AEGISVOPAK",
+      "symbol": "AYMSYNTEX",
       "date": "2026-02-23",
-      "time": "10:24:00",
-      "entry": 230.99,
-      "stop": 228.38,
-      "target": 236.21,
-      "qty": 129,
-      "exitReason": "stop",
-      "exitPrice": 228.38,
-      "pnl": -336.69
-    },
-    {
-      "symbol": "JINDALPOLY",
-      "date": "2026-02-23",
-      "time": "11:30:00",
-      "entry": 525.2,
-      "stop": 517.35,
-      "target": 540.9,
-      "qty": 57,
-      "exitReason": "stop",
-      "exitPrice": 538.79,
-      "pnl": 774.63
+      "time": "11:09:00",
+      "entry": 203.36,
+      "stop": 200.4,
+      "target": 209.28,
+      "qty": 147,
+      "exitReason": "eod",
+      "exitPrice": 206.71,
+      "pnl": 492.45
     },
     {
       "symbol": "PARKHOSPS",
       "date": "2026-02-23",
-      "time": "11:21:00",
-      "entry": 192.8,
-      "stop": 188.25,
-      "target": 201.9,
-      "qty": 155,
-      "exitReason": "eod",
-      "exitPrice": 194.91,
-      "pnl": 327.05
-    },
-    {
-      "symbol": "TEGA",
-      "date": "2026-02-23",
-      "time": "11:12:00",
-      "entry": 1706,
-      "stop": 1678.86,
-      "target": 1760.28,
-      "qty": 17,
-      "exitReason": "eod",
-      "exitPrice": 1726.8,
-      "pnl": 353.6
+      "time": "11:24:00",
+      "entry": 194.97,
+      "stop": 191.56,
+      "target": 201.79,
+      "qty": 153,
+      "exitReason": "stop",
+      "exitPrice": 191.56,
+      "pnl": -521.73
     },
     {
       "symbol": "MAMATA",
       "date": "2026-02-23",
-      "time": "12:06:00",
-      "entry": 430.95,
-      "stop": 419.99,
-      "target": 452.87,
-      "qty": 69,
+      "time": "12:03:00",
+      "entry": 428.35,
+      "stop": 421.26,
+      "target": 442.53,
+      "qty": 70,
       "exitReason": "eod",
       "exitPrice": 431.1,
-      "pnl": 10.35
+      "pnl": 192.5
     }
   ]
 }

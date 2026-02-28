@@ -517,7 +517,7 @@ async function main() {
       signaled.add(key);
 
       const entryPrice = sig.suggestedEntry ?? sig.close;
-      const stop       = sig.suggestedStop  ?? (sig.ema20 != null ? Math.round(sig.ema20 * 0.995 * 100) / 100 : entryPrice * 0.99);
+      const stop       = sig.suggestedStop  ?? entryPrice * 0.99;
       const target     = computeTarget(entryPrice, stop);
       const slPct      = entryPrice > 0 ? ((entryPrice - stop) / entryPrice * 100).toFixed(2) : '?';
       const qty        = Math.floor(POSITION_VALUE / entryPrice);
@@ -528,6 +528,7 @@ async function main() {
 
       const msg = `[ENTRY] ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} (${slPct}%) target=${target} | qty=${qty} | cumVol=${cumVol} prevDayVol=${prevVol ?? 'n/a'}`;
       console.error(msg);
+      // Log format consumed by analyzePnl parseSignalsFromLog (event 'entry'; JSON must include symbol, date, time, entry, stop, target)
       logToFile('entry', { symbol, date, time, id: pos.id, entry: entryPrice, stop, target, slPct: parseFloat(slPct), qty, cumVol, prevDayVol: prevVol });
       sendAlert(`ENTRY ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} target=${target}`);
     }

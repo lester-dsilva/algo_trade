@@ -10,7 +10,7 @@ import path from 'path';
 import {
   toNum,
   groupByDate,
-  findReversalBreakouts,
+  findMomentumBreakouts,
   refineWith1m,
 } from '../lib/entryLogic.js';
 
@@ -71,17 +71,17 @@ function main() {
     byDateLtf = groupByDate(ltfNormalized);
   }
 
-  const reversalBreakouts = findReversalBreakouts(byDate, sortedDates);
+  const reversalBreakouts = findMomentumBreakouts(byDate, sortedDates);
 
-  console.log('\n--- Reversal breakout entries (sharp up → pullback to/near 20 EMA → breakout of consolidation) ---\n');
+  console.log('\n--- Momentum breakout entries (4% sharp move → structure → volumetric breakout above resistance) ---\n');
   if (reversalBreakouts.length === 0) {
     console.log('None found.\n');
   } else {
-    console.log('Date       Time(IST)  Close   EMA(20)  ConsHigh  Suggested stop');
-    console.log('-'.repeat(65));
+    console.log('Date       Time(IST)  Close   Suggested stop');
+    console.log('-'.repeat(50));
     for (const r of reversalBreakouts) {
       console.log(
-        `${r.date}  ${r.timeIST.padEnd(8)}  ${String(r.close).padStart(6)}  ${String(r.ema20).padStart(6)}  ${String(r.consHigh ?? '').padStart(7)}  ${String(r.suggestedStop).padStart(8)}`
+        `${r.date}  ${r.timeIST.padEnd(8)}  ${String(r.close).padStart(6)}  ${String(r.suggestedStop).padStart(8)}`
       );
       if (byDateLtf) {
         const refined = refineWith1m(r.date, r.time, byDateLtf);
@@ -90,7 +90,7 @@ function main() {
         }
       }
     }
-    console.log('\nEnter at/after 3m bar. SL at Suggested stop (below bar/day low). Use 1m to refine exact bar.\n');
+    console.log('\nEnter at/after 3m bar. SL at Suggested stop (below structure low). Use 1m to refine exact bar.\n');
   }
 }
 

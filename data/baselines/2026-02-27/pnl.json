@@ -1,0 +1,27 @@
+{
+  "date": "2026-02-27",
+  "runAt": "2026-02-28T15:14:19.500Z",
+  "totalPnl": 264.6,
+  "totalCapitalDeployed": 29470.5,
+  "counts": {
+    "total": 1,
+    "stop": 0,
+    "target": 0,
+    "eod": 1,
+    "noData": 0
+  },
+  "trades": [
+    {
+      "symbol": "SARDAEN",
+      "date": "2026-02-27",
+      "time": "10:48:00",
+      "entry": 545.75,
+      "stop": 536.2,
+      "target": 564.85,
+      "qty": 54,
+      "exitReason": "eod",
+      "exitPrice": 550.65,
+      "pnl": 264.6
+    }
+  ]
+}
