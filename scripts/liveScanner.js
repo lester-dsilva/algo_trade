@@ -59,6 +59,23 @@ function msUntil920Ist() {
   return ms > 0 ? ms : 0;
 }
 
+/** Run async fn; on failure retry up to maxRetries times with exponential backoff (baseDelayMs * 2^attempt). */
+async function withExponentialBackoff(fn, maxRetries = 4, baseDelayMs = 1000) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function loadWatchlistSymbols() {
   const raw = fs.readFileSync(WATCHLIST_PATH, 'utf8').replace(/\r\n/g, '\n').trim();
   const lines = raw.split('\n');
@@ -259,22 +276,37 @@ async function main() {
   const todayFrom = new Date(`${todayStr}T00:00:00+05:30`);
   const todayTo = new Date(`${todayStr}T23:59:59+05:30`);
   const fetchTodayOpen = async () => {
-    console.error('Loading today open (daily only) for gap filter:', symbolsForPrevDay.length, 'symbols');
+    const MAX_RETRIES = 4;
+    const BASE_DELAY_MS = 1000;
+    console.error('Loading today open (daily only) for gap filter:', symbolsForPrevDay.length, 'symbols (retry with exponential backoff)');
     for (let i = 0; i < symbolsForPrevDay.length; i += CONCURRENCY) {
       const chunk = symbolsForPrevDay.slice(i, i + CONCURRENCY);
       await Promise.all(
         chunk.map(async (symbol) => {
           try {
-            const token = symbolToToken.get(symbol);
-            const candles = await kite.getHistoricalData(token, 'day', todayFrom, todayTo, false, false);
-            if (candles && candles.length > 0) dayOpenBySymbol.set(symbol, candles[0].open);
+            await withExponentialBackoff(async () => {
+              const token = symbolToToken.get(symbol);
+              const candles = await kite.getHistoricalData(token, 'day', todayFrom, todayTo, false, false);
+              if (candles && candles.length > 0) {
+                dayOpenBySymbol.set(symbol, candles[0].open);
+                return;
+              }
+              throw new Error('No candles');
+            }, MAX_RETRIES, BASE_DELAY_MS);
           } catch {
-            // skip
+            // will be reported after all batches
           }
         })
       );
     }
+    const failedSymbols = symbolsForPrevDay.filter((s) => !dayOpenBySymbol.has(s));
     console.error('Today open loaded:', dayOpenBySymbol.size, 'symbols (daily only; gap = prev close vs today open)');
+    if (failedSymbols.length > 0) {
+      const list = failedSymbols.length <= 30 ? failedSymbols.join(', ') : `${failedSymbols.slice(0, 30).join(', ')} ... +${failedSymbols.length - 30} more`;
+      console.error('Today open fetch failed after retries for', failedSymbols.length, 'symbols:', list);
+      logToFile('today_open_failed', { count: failedSymbols.length, symbols: failedSymbols });
+      await sendAlert(`Today open fetch failed after ${MAX_RETRIES + 1} attempts (exponential backoff) for ${failedSymbols.length} symbols: ${list}`);
+    }
   };
 
   const delayMs = msUntil920Ist();
