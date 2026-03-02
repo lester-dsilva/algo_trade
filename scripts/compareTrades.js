@@ -88,7 +88,7 @@ function simulateTrade(signal, candles) {
   let highWaterMark = 0;
   for (let i = idx + 1; i < dayCandles.length; i++) {
     const b = dayCandles[i];
-    if (!hitFirstTarget && b.low <= stop) return { exitReason: 'stop', exitPrice: stop, pnl: (stop - entry) * qty, qty };
+    if (!hitFirstTarget && b.close <= stop) return { exitReason: 'stop', exitPrice: stop, pnl: (stop - entry) * qty, qty };
     if (!hitFirstTarget && b.close >= firstTarget) {
       hitFirstTarget = true;
       if ((b.time || '').startsWith(EOD_BAR_TIME) || b.time >= '15:24') {
@@ -119,7 +119,7 @@ function main() {
   const maxEntryCandleRangePct = process.env.MAX_ENTRY_CANDLE_RANGE_PCT != null ? parseFloat(process.env.MAX_ENTRY_CANDLE_RANGE_PCT) : 1.5;
   const maxSlPct = process.env.MAX_SL_PCT != null ? parseFloat(process.env.MAX_SL_PCT) : 2;
   const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
-  const maxEntryTime = process.env.MAX_ENTRY_TIME ?? null;
+  const maxEntryTime = process.env.MAX_ENTRY_TIME ?? '12:15';
 
   const allTrades = [];
 
@@ -166,6 +166,7 @@ function main() {
         maxConsolidationRangePct,
         minBreakoutVolumeRatio: 2,
         stopBelowStructurePct: 0.2,
+        maxPullbackPct: process.env.MAX_PULLBACK_PCT != null ? parseFloat(process.env.MAX_PULLBACK_PCT) : 5,
       });
 
       for (const e of entries) {

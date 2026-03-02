@@ -272,7 +272,7 @@ function simulateTrade(signal, candles) {
   let highWaterMark = 0;
   for (let i = idx + 1; i < dayCandles.length; i++) {
     const b = dayCandles[i];
-    if (!hitFirstTarget && b.low <= stop) return { exitReason: 'stop', exitPrice: stop, pnl: (stop - entry) * qty, qty };
+    if (!hitFirstTarget && b.close <= stop) return { exitReason: 'stop', exitPrice: stop, pnl: (stop - entry) * qty, qty };
     if (!hitFirstTarget && b.close >= firstTarget) {
       hitFirstTarget = true;
       if ((b.time || '').startsWith(EOD_BAR_TIME) || b.time >= '15:24') {
@@ -391,7 +391,7 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
   const maxSlPct = process.env.MAX_SL_PCT != null ? parseFloat(process.env.MAX_SL_PCT) : 2;
   const maxPullbackPct = process.env.MAX_PULLBACK_PCT != null ? parseFloat(process.env.MAX_PULLBACK_PCT) : 5;
   const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
-  const maxEntryTime = process.env.MAX_ENTRY_TIME ?? null;
+  const maxEntryTime = process.env.MAX_ENTRY_TIME ?? '12:15';
   const signals = [];
   let idx = 0;
   for (const symbol of symbols) {
@@ -456,6 +456,7 @@ async function getSignalsFromEntryLogic(forDate, symbols, kite, instruments) {
       maxConsolidationRangePct,
       minBreakoutVolumeRatio: process.env.MIN_BREAKOUT_VOLUME_RATIO != null ? parseFloat(process.env.MIN_BREAKOUT_VOLUME_RATIO) : 2,
       stopBelowStructurePct: process.env.STOP_BELOW_STRUCTURE_PCT != null ? parseFloat(process.env.STOP_BELOW_STRUCTURE_PCT) : 0.2,
+      maxPullbackPct: process.env.MAX_PULLBACK_PCT != null ? parseFloat(process.env.MAX_PULLBACK_PCT) : 5,
     });
     const minVolRatio = process.env.MIN_VOLUME_RATIO != null ? parseFloat(process.env.MIN_VOLUME_RATIO) : null;
     if (!entries.some((e) => e.date === forDate) && skipReasons.length > 0) {

@@ -442,7 +442,7 @@ async function main() {
     const maxPullbackPct         = process.env.MAX_PULLBACK_PCT != null         ? parseFloat(process.env.MAX_PULLBACK_PCT)         : 5;
     const maxConsolidationRangePct = process.env.MAX_CONSOLIDATION_RANGE_PCT != null ? parseFloat(process.env.MAX_CONSOLIDATION_RANGE_PCT) : 2;
     const minVolRatio            = process.env.MIN_VOLUME_RATIO != null         ? parseFloat(process.env.MIN_VOLUME_RATIO)         : null;
-    const maxEntryTime           = process.env.MAX_ENTRY_TIME ?? null;
+    const maxEntryTime           = process.env.MAX_ENTRY_TIME ?? '12:15';
 
     // collect internal filter skips — logged to file for EOD debug
     const skipReasons = [];
