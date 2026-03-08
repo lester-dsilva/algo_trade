@@ -39,14 +39,17 @@ function resolveSymbol(prevDayOhlc, normalizedName) {
 }
 
 /**
- * Simulate one trade: 2% stop, 3% first target then 1.5% trail, EOD at 15:24.
+ * Simulate one trade: initial SL, first target % then trail %, EOD at 15:24.
  * bars = full day 3m, entryBarIndex = bar index at which we entered (we enter at that bar's close).
+ * Override firstTargetPct / trailPct via opts for comparison runs.
  */
-function simulateTrade(bars, entryBarIndex, entry, stop) {
+function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
+  const firstTargetPct = opts.firstTargetPct ?? FIRST_TARGET_PCT;
+  const trailPct = opts.trailPct ?? TRAIL_PCT;
   const qty = Math.floor(POSITION_VALUE / entry);
   if (qty <= 0) return { exitReason: 'skip', exitPrice: entry, pnl: 0, qty: 0 };
 
-  const firstTarget = Math.round(entry * (1 + FIRST_TARGET_PCT / 100) * 100) / 100;
+  const firstTarget = Math.round(entry * (1 + firstTargetPct / 100) * 100) / 100;
   let hitFirstTarget = false;
   let highWaterMark = 0;
 
@@ -72,7 +75,7 @@ function simulateTrade(bars, entryBarIndex, entry, stop) {
     }
 
     highWaterMark = Math.max(highWaterMark, b.high);
-    const trailLevel = Math.round(highWaterMark * (1 - TRAIL_PCT / 100) * 100) / 100;
+    const trailLevel = Math.round(highWaterMark * (1 - trailPct / 100) * 100) / 100;
     if (b.close <= trailLevel) {
       return { exitReason: 'trail', exitPrice: trailLevel, pnl: Math.round((trailLevel - entry) * qty * 100) / 100, qty };
     }
@@ -87,7 +90,10 @@ function simulateTrade(bars, entryBarIndex, entry, stop) {
  * Run backtest for one date. Returns { backtestDate, results, totalPnl, trades, wins, losses } or null if no data.
  */
 export function runBacktestForDate(backtestDate, opts = {}) {
-  const { quiet = false } = opts;
+  const { quiet = false, firstTargetPct, trailPct } = opts;
+  const simOpts = {};
+  if (firstTargetPct != null) simOpts.firstTargetPct = firstTargetPct;
+  if (trailPct != null) simOpts.trailPct = trailPct;
   if (!hasBacktestData(backtestDate)) return null;
 
   const prevDayOhlc = loadPrevDayOhlc(backtestDate);
@@ -129,7 +135,7 @@ export function runBacktestForDate(backtestDate, opts = {}) {
   const results = [];
   for (const sig of signals) {
     const bars = load3mForSymbol(backtestDate, sig.symbol);
-    const sim = simulateTrade(bars, sig.barIndex, sig.entry, sig.stop);
+    const sim = simulateTrade(bars, sig.barIndex, sig.entry, sig.stop, simOpts);
     results.push({
       symbol: sig.symbol,
       time: sig.time,
