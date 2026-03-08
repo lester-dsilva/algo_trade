@@ -9,3 +9,6 @@ data/.tmp/
 data/*.csv
 data/*/*.csv
 data/.cache
+
+# v2 backtest data (prev_day_ohlc + 3m by date)
+v2/data/
