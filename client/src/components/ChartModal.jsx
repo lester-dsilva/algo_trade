@@ -1,0 +1,210 @@
+import { useState, useEffect, useRef } from 'react';
+import {
+  createChart,
+  CandlestickSeries,
+  LineSeries,
+  HistogramSeries,
+  createSeriesMarkers,
+} from 'lightweight-charts';
+import * as api from '../api';
+
+// IST: treat bar date+time as UTC for axis so chart shows 09:15, 09:18 (IST labels)
+function parseTime3m(bar) {
+  const str = `${bar.date}T${(bar.time || '').slice(0, 5)}:00Z`;
+  return Math.floor(new Date(str).getTime() / 1000);
+}
+
+// Daily: business day for lightweight-charts
+function toBusinessDay(dateStr) {
+  const [y, m, d] = (dateStr || '').split('-').map(Number);
+  return { year: y, month: m, day: d };
+}
+
+export default function ChartModal({ date, symbol, onClose }) {
+  const [mode, setMode] = useState('3m');
+  const [data, setData] = useState(null);
+  const [dailyData, setDailyData] = useState(null);
+  const [error, setError] = useState('');
+  const chartRef = useRef(null);
+  const chartInstance = useRef(null);
+
+  useEffect(() => {
+    if (!date || !symbol) return;
+    setError('');
+    setDailyData(null);
+    api.getChart3m(date, symbol).then(setData).catch((e) => setError(e.message));
+  }, [date, symbol]);
+
+  useEffect(() => {
+    if (mode !== 'daily' || !symbol) return;
+    setError('');
+    api.getChartDaily(symbol, 20).then(setDailyData).catch((e) => setError(e.message));
+  }, [mode, symbol]);
+
+  useEffect(() => {
+    const is3m = mode === '3m';
+    const bars = is3m ? data?.bars : dailyData?.bars;
+    if (!bars?.length || !chartRef.current) return;
+
+    const container = chartRef.current;
+    if (chartInstance.current) {
+      chartInstance.current.remove();
+      chartInstance.current = null;
+    }
+
+    const chart = createChart(container, {
+      width: container.clientWidth,
+      height: 420,
+      layout: { background: { type: 'solid', color: '#fff' }, textColor: '#333' },
+      grid: { vertLines: { color: '#eee' }, horzLines: { color: '#eee' } },
+      timeScale: { timeVisible: true, secondsVisible: false },
+      rightPriceScale: { borderColor: '#ccc' },
+    });
+
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#26a69a',
+      downColor: '#ef5350',
+      borderVisible: false,
+    });
+
+    if (is3m) {
+      candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0.4 } });
+      const chartBars = data.bars.map((b, idx) => ({
+        time: parseTime3m(b),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        index: idx,
+      }));
+      candleSeries.setData(chartBars);
+
+      if (data.entry?.price != null) {
+        const line = chart.addSeries(LineSeries, { color: '#2196f3', lineWidth: 2 });
+        line.setData(chartBars.map((b) => ({ time: b.time, value: data.entry.price })));
+      }
+      if (data.stop != null) {
+        const line = chart.addSeries(LineSeries, { color: '#f44336', lineWidth: 1 });
+        line.setData(chartBars.map((b) => ({ time: b.time, value: data.stop })));
+      }
+      if (data.exit?.price != null) {
+        const line = chart.addSeries(LineSeries, { color: '#4caf50', lineWidth: 1 });
+        line.setData(chartBars.map((b) => ({ time: b.time, value: data.exit.price })));
+      }
+
+      const markers = [];
+      if (data.entry?.barIndex != null) {
+        const b = chartBars[data.entry.barIndex];
+        if (b) {
+          markers.push({
+            time: b.time,
+            position: 'belowBar',
+            color: '#2196f3',
+            shape: 'arrowUp',
+            text: 'Entry',
+          });
+        }
+      }
+      if (data.exit?.barIndex != null) {
+        const b = chartBars[data.exit.barIndex];
+        if (b) {
+          markers.push({
+            time: b.time,
+            position: 'aboveBar',
+            color: '#4caf50',
+            shape: 'arrowDown',
+            text: 'Exit',
+          });
+        }
+      }
+      if (markers.length) createSeriesMarkers(candleSeries, markers);
+
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.7, bottom: 0 },
+      });
+      volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } });
+      const volData = data.bars.map((b) => ({
+        time: parseTime3m(b),
+        value: b.volume ?? 0,
+        color: b.close >= b.open ? '#26a69a' : '#ef5350',
+      }));
+      volumeSeries.setData(volData);
+    } else {
+      const chartBars = dailyData.bars.map((b) => ({
+        time: toBusinessDay(b.date),
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      }));
+      candleSeries.setData(chartBars);
+
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.7, bottom: 0 },
+      });
+      volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.7, bottom: 0 } });
+      const volData = dailyData.bars.map((b) => ({
+        time: toBusinessDay(b.date),
+        value: b.volume ?? 0,
+        color: b.close >= b.open ? '#26a69a' : '#ef5350',
+      }));
+      volumeSeries.setData(volData);
+    }
+
+    chart.timeScale().fitContent();
+    chartInstance.current = chart;
+    const onResize = () => chart.applyOptions({ width: container.clientWidth });
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      chart.remove();
+      chartInstance.current = null;
+    };
+  }, [data, dailyData, mode]);
+
+  const showChart = (mode === '3m' && data?.bars?.length) || (mode === 'daily' && dailyData?.bars?.length);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>
+            {mode === '3m' ? `3m — ${symbol} (${date})` : `Daily — ${symbol} (last 20 days)`}
+          </h2>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <button
+              type="button"
+              className={mode === '3m' ? 'active' : ''}
+              onClick={() => setMode('3m')}
+            >
+              3m
+            </button>
+            <button
+              type="button"
+              className={mode === 'daily' ? 'active' : ''}
+              onClick={() => setMode('daily')}
+            >
+              Daily
+            </button>
+            <button type="button" onClick={onClose}>Close</button>
+          </div>
+        </div>
+        {error && <div className="error">{error}</div>}
+        {mode === '3m' && !data && !error && <p>Loading 3m…</p>}
+        {mode === 'daily' && !dailyData && !error && <p>Loading daily…</p>}
+        {mode === '3m' && data && (
+          <p className="muted">
+            Entry: {data.entry?.price?.toFixed(2)} · Stop: {data.stop?.toFixed(2)} · Exit: {data.exit?.price?.toFixed(2)} ({data.exit?.reason}) · Axis: IST
+          </p>
+        )}
+        {showChart && (
+          <div ref={chartRef} style={{ width: '100%', minHeight: 420 }} />
+        )}
+      </div>
+    </div>
+  );
+}

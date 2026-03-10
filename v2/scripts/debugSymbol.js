@@ -53,14 +53,28 @@ console.log('Gap% (open vs prev close):', gapPct.toFixed(2), gapPct > 2 ? 'FAIL 
 console.log('First 45m high:', high45, '| Move% from open:', movePct.toFixed(2), movePct < 4 ? 'FAIL (<4%)' : 'ok');
 console.log('');
 
-const result = findEntry(bars, prev);
+const withWhy = process.argv.includes('--why');
+const result = findEntry(bars, prev, withWhy ? { debug: true } : {});
 if (result) {
   console.log('ENTRY FOUND:', result);
+  if (result.failedBars && result.failedBars.length) {
+    console.log('\nWhy earlier bars did not qualify (first entry was at ' + (result.time || '').slice(0, 5) + '):');
+    const byTime = new Map();
+    for (const { time, reason } of result.failedBars) {
+      const key = time;
+      if (!byTime.has(key)) byTime.set(key, []);
+      byTime.get(key).push(reason);
+    }
+    for (const [t, reasons] of byTime) {
+      const uniq = [...new Set(reasons)];
+      console.log('  ' + t + ': ' + uniq.join('; '));
+    }
+  }
   process.exit(0);
 }
 
 console.log('No entry. Scanning bars for first failure...\n');
-const FIRST_45_BARS = 15;
+const FIRST_45_BARS = 20;
 const VOL_AVG_LOOKBACK = 5;
 const DAY_VOL_MULT = 3;
 const MAX_ENTRY_TIME = '12:30';

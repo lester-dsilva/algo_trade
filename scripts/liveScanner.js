@@ -9,6 +9,9 @@
  *
  * Requires: .env with Kite credentials; optional TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GAP_UP_THRESHOLD_PCT (extra gap skip).
  * Prev day volume: v2/data/YYYY-MM-DD or data/YYYY-MM-DD 3m CSVs (same as backtest). Max 3000 tokens per KiteTicker.
+ *
+ * Debug logs: LIVE_SCANNER_LOG=0 disables data/live_scanner.log; LOG_PATH overrides path.
+ * Volume debug: each bar flush is logged to data/volume_debug.log (symbol, time, volume, volumeSource, firstCumVol, lastCumVol, sumQuantity). Set LIVE_SCANNER_LOG_VOLUME=0 to disable; LOG_VOLUME_PATH to override path. Heartbeat includes volume_debug: { cumulative_diff, sum_quantity } counts.
  */
 
 import fs from 'fs';
@@ -18,7 +21,7 @@ import { KiteTicker } from 'kiteconnect';
 import { createCandleBuilder } from '../lib/candleBuilder.js';
 import { findEntry } from '../v2/lib/entryLogic.js';
 import { addPosition, processBar, getTotalPnl, eodSweep, POSITION_VALUE } from '../lib/positionStore.js';
-import { sendAlert } from '../lib/telegram.js';
+import { sendAlert, isConfigured as telegramConfigured } from '../lib/telegram.js';
 
 const WATCHLIST_PATH = path.join(process.cwd(), 'config', 'nse_mcap_above_900cr.csv');
 const MAX_TOKENS = 3000;
@@ -29,6 +32,12 @@ const LOG_PATH = process.env.LOG_PATH
   ? path.resolve(process.cwd(), process.env.LOG_PATH)
   : path.join(process.cwd(), 'data', 'live_scanner.log');
 
+/** Volume debug log: one line per bar flush (symbol, time, volume, cumulative_diff vs sum_quantity). Set LIVE_SCANNER_LOG_VOLUME=0 to disable. */
+const LOG_VOLUME_ENABLED = process.env.LIVE_SCANNER_LOG_VOLUME !== '0' && process.env.LIVE_SCANNER_LOG_VOLUME !== 'false';
+const LOG_VOLUME_PATH = process.env.LOG_VOLUME_PATH
+  ? path.resolve(process.cwd(), process.env.LOG_VOLUME_PATH)
+  : path.join(process.cwd(), 'data', 'volume_debug.log');
+
 function logToFile(event, detail = '') {
   if (!LOG_ENABLED) return;
   const ts = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
@@ -37,6 +46,17 @@ function logToFile(event, detail = '') {
     const dir = path.dirname(LOG_PATH);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(LOG_PATH, line, 'utf8');
+  } catch (_) {}
+}
+
+function logVolumeFlush(info) {
+  if (!LOG_VOLUME_ENABLED) return;
+  const ts = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+  const line = `${ts}\tbar_volume\t${JSON.stringify(info)}\n`;
+  try {
+    const dir = path.dirname(LOG_VOLUME_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(LOG_VOLUME_PATH, line, 'utf8');
   } catch (_) {}
 }
 
@@ -184,14 +204,14 @@ async function main() {
   }
   console.error('Subscribing to', tokens.length, 'instruments (max', MAX_TOKENS + ')');
   logToFile('start', { tokens: tokens.length, watchlist: WATCHLIST_PATH });
+  logToFile('start', { volume_debug: LOG_VOLUME_ENABLED, volume_debug_path: LOG_VOLUME_PATH });
 
   const symbolToToken = new Map();
   for (const [token, sym] of tokenToSymbol) symbolToToken.set(sym, token);
 
   const gapUpThresholdPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
   const prevCloseBySymbol = new Map();
-  const prevDayVolumeBySymbol = new Map();   // from daily OHLCV API (fallback)
-  const prevDay3mVolBySymbol  = new Map();   // sum of prev day 3m (v2/data or data/) for v2 volume filter
+  const prevDayVolumeBySymbol = new Map();   // from daily OHLCV API only (prev day volume)
   const dayOpenBySymbol = new Map();
   const CONCURRENCY = 15;
   const symbolsForPrevDay = [...symbolToToken.keys()];
@@ -201,11 +221,13 @@ async function main() {
   const dayFrom = new Date(`${rangeFromStr}T00:00:00+05:30`);
   const dayTo = new Date(`${todayStr}T23:59:59+05:30`);
   // Same as analyzePnl: prev day from daily API only; 3m only for current day (built from ticks below).
+  const missingVolumeReasons = new Map(); // symbol -> reason string (only when volume not set)
   console.error('Prev day (close + volume) from daily API only, range', rangeFromStr, '→', todayStr, '|', symbolsForPrevDay.length, 'symbols');
   for (let i = 0; i < symbolsForPrevDay.length; i += CONCURRENCY) {
     const chunk = symbolsForPrevDay.slice(i, i + CONCURRENCY);
     await Promise.all(
       chunk.map(async (symbol) => {
+        let set = false;
         try {
           const token = symbolToToken.get(symbol);
           const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
@@ -215,11 +237,16 @@ async function main() {
               if (d < todayStr) {
                 prevCloseBySymbol.set(symbol, c.close);
                 prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+                set = true;
               }
             }
           }
-        } catch {
-          // skip
+          if (!set) {
+            const reason = (!candles || candles.length === 0) ? 'no_candles' : 'no_prev_day_in_range';
+            missingVolumeReasons.set(symbol, reason);
+          }
+        } catch (e) {
+          missingVolumeReasons.set(symbol, 'api_error: ' + (e && e.message ? e.message : String(e)));
         }
       })
     );
@@ -236,6 +263,7 @@ async function main() {
     for (let i = 0; i < missingVol.length; i += CONCURRENCY) {
       const chunk = missingVol.slice(i, i + CONCURRENCY);
       await Promise.all(chunk.map(async (symbol) => {
+        let set = false;
         try {
           const token = symbolToToken.get(symbol);
           const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
@@ -245,14 +273,36 @@ async function main() {
               if (d < todayStr) {
                 prevCloseBySymbol.set(symbol, c.close);
                 prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+                set = true;
               }
             }
           }
-        } catch { /* skip */ }
+          if (!set) {
+            const reason = (!candles || candles.length === 0) ? 'no_candles' : 'no_prev_day_in_range';
+            missingVolumeReasons.set(symbol, reason);
+          }
+        } catch (e) {
+          missingVolumeReasons.set(symbol, 'api_error: ' + (e && e.message ? e.message : String(e)));
+        }
       }));
     }
     const stillMissing = missingVol.filter(s => !prevDayVolumeBySymbol.has(s));
     console.error(`After retry: ${prevDayVolumeBySymbol.size} symbols have daily volume; still missing: ${stillMissing.length}`);
+    // Log reasons for missing daily volume (for still-missing, use latest reason from map)
+    const reasonCounts = new Map();
+    for (const s of stillMissing.length ? stillMissing : missingVol) {
+      const r = missingVolumeReasons.get(s) || 'unknown';
+      reasonCounts.set(r, (reasonCounts.get(r) || 0) + 1);
+    }
+    if (reasonCounts.size > 0) {
+      console.error('Missing daily volume — reasons:');
+      for (const [reason, count] of [...reasonCounts.entries()].sort((a, b) => b[1] - a[1])) {
+        console.error('  ', count, '×', reason);
+      }
+      const missingList = stillMissing.length ? stillMissing : missingVol;
+      const list = missingList.slice(0, 50);
+      console.error('  Symbols (up to 50):', list.join(', '), list.length < missingList.length ? '...' : '');
+    }
   }
   console.error('Prev day daily OHLCV done:', prevDayVolumeBySymbol.size, '/', symbolsForPrevDay.length, 'symbols have volume.');
 
@@ -262,22 +312,8 @@ async function main() {
     process.exit(1);
   }
 
-  // Prev day volume for v2 filter (2.7x): backtest uses daily volume from prev_day_ohlc. We use daily API (prevDayVolumeBySymbol); optional 3m folder can override per symbol.
-  const prevInfo = findPrevDateFolder(todayStr);
-  if (prevInfo) {
-    console.error(`Loading prev day 3m from ${prevInfo.baseDir}/${prevInfo.folder} (optional, overrides daily volume when present)...`);
-    let volCount = 0;
-    for (const symbol of symbolsForPrevDay) {
-      const allBars = loadPrevDayAllBars(symbol, prevInfo);
-      if (allBars.length > 0) {
-        const totalVol = allBars.reduce((s, b) => s + (b.volume ?? 0), 0);
-        if (totalVol > 0) { prevDay3mVolBySymbol.set(symbol, totalVol); volCount++; }
-      }
-    }
-    console.error(`Prev day 3m loaded: ${volCount} symbols; rest use daily API volume.`);
-  } else {
-    console.error('No prev day 3m folder in v2/data or data/ — using daily API volume only (matches v2 backtest).');
-  }
+  // Prev day volume for v2 filter (2.7x): strictly daily OHLC volume only (no 3m override).
+  console.error('Prev day volume: daily OHLC only (no 3m override).');
 
   const todayFrom = new Date(`${todayStr}T00:00:00+05:30`);
   const todayTo = new Date(`${todayStr}T23:59:59+05:30`);
@@ -311,7 +347,8 @@ async function main() {
       const list = failedSymbols.length <= 30 ? failedSymbols.join(', ') : `${failedSymbols.slice(0, 30).join(', ')} ... +${failedSymbols.length - 30} more`;
       console.error('Today open fetch failed after retries for', failedSymbols.length, 'symbols:', list);
       logToFile('today_open_failed', { count: failedSymbols.length, symbols: failedSymbols });
-      await sendAlert(`Today open fetch failed after ${MAX_RETRIES + 1} attempts (exponential backoff) for ${failedSymbols.length} symbols: ${list}`);
+      // Reasons: Kite returns no day candle for today yet, rate limit, or symbol suspended/delisted
+      await sendAlert(`Today open could not be fetched for ${failedSymbols.length} symbols (gap filter may skip them): ${list}`);
     }
   };
 
@@ -336,6 +373,8 @@ async function main() {
   let barsClosedCount = 0;
   let lastHeartbeat = 0;
   let tickCount = 0;
+  let volumeDebugCumulative = 0;
+  let volumeDebugSum = 0;
 
   // ── helpers ────────────────────────────────────────────────────────────────
   function pnlStr(pnl) {
@@ -368,7 +407,8 @@ async function main() {
   }
 
   // ── bar-close callback ─────────────────────────────────────────────────────
-  const builder = createCandleBuilder((bar) => {
+  const builder = createCandleBuilder(
+    (bar) => {
     const { symbol, date, time, open, high, low, close, volume } = bar;
     barsClosedCount++;
 
@@ -380,7 +420,13 @@ async function main() {
       const symCount = seriesBySymbol.size;
       const msg = `bars=${barsClosedCount} symbols=${symCount} ticks=${tickCount} | realized=${pnlStr(t.realizedPnl)} closed=${t.closedCount} open=${t.openCount}`;
       console.error(`[heartbeat] ${new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })} IST | ${msg}`);
-      logToFile('heartbeat', { bars: barsClosedCount, symbols: symCount, ticks: tickCount, ...t });
+      logToFile('heartbeat', {
+        bars: barsClosedCount,
+        symbols: symCount,
+        ticks: tickCount,
+        volume_debug: { cumulative_diff: volumeDebugCumulative, sum_quantity: volumeDebugSum },
+        ...t,
+      });
     }
 
     // ── grow today's bar series ──
@@ -440,7 +486,7 @@ async function main() {
     // ── STEP 2: v2 entry logic (4% move + pullback/breakout, 2.7x vol, gap ≤2%, 3% target then 1.5% trail)
     const todayBars = series[date] || [];
     const prevClose = prevCloseBySymbol.get(symbol) ?? null;
-    const prevVol = prevDay3mVolBySymbol.get(symbol) ?? prevDayVolumeBySymbol.get(symbol) ?? 0;
+    const prevVol = prevDayVolumeBySymbol.get(symbol) ?? 0;
     const prevDay = prevClose != null && prevClose > 0 ? { close: prevClose, volume: prevVol } : null;
     let skipEntry = false;
     if (prevDay && gapUpThresholdPct != null && Number.isFinite(gapUpThresholdPct)) {
@@ -455,7 +501,9 @@ async function main() {
     }
     if (!skipEntry && prevDay && todayBars.length >= 21) {
       const result = findEntry(todayBars, prevDay);
-      if (result && (result.time || '').slice(0, 5) === (time || '').slice(0, 5)) {
+      const resultTime5 = (result?.time || '').slice(0, 5);
+      const barTime5 = (time || '').slice(0, 5);
+      if (result && resultTime5 === barTime5) {
         const key = `${symbol}|${date}|v2_breakout|${time}`;
         if (!signaled.has(key)) {
           signaled.add(key);
@@ -480,10 +528,21 @@ async function main() {
           const msg = `[ENTRY] ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} (${slPct}%) 3%→trail | qty=${qty} | cumVol=${cumVol}`;
           console.error(msg);
           logToFile('entry', { symbol, date, time, id: pos.id, entry: entryPrice, stop, target: firstTargetPrice, slPct: parseFloat(slPct), qty, cumVol });
+          if (!telegramConfigured()) {
+            logToFile('telegram_skip', { reason: 'not_configured', symbol, time, msg: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env' });
+          }
           sendAlert(`ENTRY ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} 3%→trail`);
         }
+      } else if (result && resultTime5 !== barTime5) {
+        logToFile('entry_bar_mismatch', { symbol, date, entryBarTime: resultTime5, currentBarTime: barTime5, reason: 'Alert only when current bar is the entry bar' });
       }
     }
+  }, {
+    onVolumeFlush(info) {
+      if (info.volumeSource === 'cumulative_diff') volumeDebugCumulative++;
+      else volumeDebugSum++;
+      logVolumeFlush(info);
+    },
   });
 
   const ticker = new KiteTicker({
@@ -499,7 +558,7 @@ async function main() {
       if (!symbol) continue;
       const ts = t.exchange_timestamp || t.last_trade_time;
       const when = ts instanceof Date ? ts : (typeof ts === 'string' ? new Date(ts) : new Date());
-      builder.addTick(token, symbol, t.last_price || 0, t.last_traded_quantity || 0, when);
+      builder.addTick(token, symbol, t.last_price || 0, t.last_traded_quantity || 0, when, t.volume);
     }
   });
 
@@ -508,6 +567,13 @@ async function main() {
     ticker.setMode(ticker.modeFull, tokens);
     const msg = `subscribed to ${tokens.length} tokens`;
     console.error('Connected. Building 3m bars; signals will be logged and sent to Telegram if configured.');
+    if (LOG_VOLUME_ENABLED) {
+      console.error('Volume debug: logging each bar flush (volume, cumulative_diff vs sum_quantity) to', LOG_VOLUME_PATH);
+    }
+    if (!telegramConfigured()) {
+      console.error('Telegram not configured — no alerts will be sent. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env');
+      logToFile('telegram', 'not_configured');
+    }
     logToFile('connect', msg);
   });
 

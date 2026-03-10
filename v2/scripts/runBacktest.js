@@ -47,7 +47,7 @@ function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
   const firstTargetPct = opts.firstTargetPct ?? FIRST_TARGET_PCT;
   const trailPct = opts.trailPct ?? TRAIL_PCT;
   const qty = Math.floor(POSITION_VALUE / entry);
-  if (qty <= 0) return { exitReason: 'skip', exitPrice: entry, pnl: 0, qty: 0 };
+  if (qty <= 0) return { exitReason: 'skip', exitPrice: entry, pnl: 0, qty: 0, exitBarIndex: entryBarIndex };
 
   const firstTarget = Math.round(entry * (1 + firstTargetPct / 100) * 100) / 100;
   let hitFirstTarget = false;
@@ -59,12 +59,12 @@ function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
 
     if (isEod) {
       const exitPrice = b.close;
-      return { exitReason: 'eod', exitPrice, pnl: Math.round((exitPrice - entry) * qty * 100) / 100, qty };
+      return { exitReason: 'eod', exitPrice, pnl: Math.round((exitPrice - entry) * qty * 100) / 100, qty, exitBarIndex: i };
     }
 
     if (!hitFirstTarget) {
       if (b.close <= stop) {
-        return { exitReason: 'stop', exitPrice: stop, pnl: Math.round((stop - entry) * qty * 100) / 100, qty };
+        return { exitReason: 'stop', exitPrice: stop, pnl: Math.round((stop - entry) * qty * 100) / 100, qty, exitBarIndex: i };
       }
       if (b.close >= firstTarget) {
         hitFirstTarget = true;
@@ -77,13 +77,14 @@ function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
     highWaterMark = Math.max(highWaterMark, b.high);
     const trailLevel = Math.round(highWaterMark * (1 - trailPct / 100) * 100) / 100;
     if (b.close <= trailLevel) {
-      return { exitReason: 'trail', exitPrice: trailLevel, pnl: Math.round((trailLevel - entry) * qty * 100) / 100, qty };
+      return { exitReason: 'trail', exitPrice: trailLevel, pnl: Math.round((trailLevel - entry) * qty * 100) / 100, qty, exitBarIndex: i };
     }
   }
 
   const last = bars[bars.length - 1];
   const exitPrice = last ? last.close : entry;
-  return { exitReason: 'eod', exitPrice, pnl: last ? Math.round((exitPrice - entry) * qty * 100) / 100 : 0, qty };
+  const exitBarIndex = last ? bars.length - 1 : entryBarIndex;
+  return { exitReason: 'eod', exitPrice, pnl: last ? Math.round((exitPrice - entry) * qty * 100) / 100 : 0, qty, exitBarIndex };
 }
 
 /**
@@ -145,6 +146,8 @@ export function runBacktestForDate(backtestDate, opts = {}) {
       exitPrice: sim.exitPrice,
       pnl: sim.pnl,
       qty: sim.qty,
+      exitBarIndex: sim.exitBarIndex,
+      barIndex: sig.barIndex,
     });
   }
 

@@ -27,8 +27,8 @@ const WATCHLIST_PATH = path.join(ROOT, 'config', 'nse_mcap_above_900cr.csv');
 const DATA_DIR = path.join(ROOT, 'v2', 'data');
 const CACHE_DIR = path.join(ROOT, 'data', '.cache');
 
-const CONCURRENCY = 3;
-const BATCH_DELAY_MS = 800;
+const CONCURRENCY = 8;   // symbols per batch (higher = faster; reduce if Kite rate-limits)
+const BATCH_DELAY_MS = 500; // ms between batches (increase if you see rate limit errors)
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_MS = 2000;
 

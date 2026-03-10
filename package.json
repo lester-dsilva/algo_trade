@@ -4,6 +4,11 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "server": "node server/index.js",
+    "server:watch": "node --watch server/index.js",
+    "client": "cd client && npm run dev",
+    "dev:all": "concurrently \"npm run server\" \"npm run client\"",
+    "dev:all:watch": "concurrently \"npm run server:watch\" \"npm run client\"",
     "load": "node scripts/loadCsv.js",
     "ema": "node scripts/ema.js",
     "momentum": "node scripts/momentum.js",
@@ -19,7 +24,12 @@
     "positions": "node scripts/positionManager.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^4.21.0",
     "kiteconnect": "^5.1.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
   }
 }
