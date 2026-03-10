@@ -15,6 +15,7 @@ import { runBacktestForDate } from './runBacktest.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR = path.join(ROOT, 'v2', 'data');
+const BACKTEST_CACHE_DIR = path.join(DATA_DIR, 'backtest_cache');
 
 function getDatesWithData(monthFilter) {
   if (!fs.existsSync(DATA_DIR)) return [];
@@ -28,6 +29,20 @@ function getDatesWithData(monthFilter) {
     });
   }
   return dates.sort();
+}
+
+function writeBacktestCache(month, data) {
+  if (!month) return;
+  try {
+    if (!fs.existsSync(BACKTEST_CACHE_DIR)) {
+      fs.mkdirSync(BACKTEST_CACHE_DIR, { recursive: true });
+    }
+    const file = path.join(BACKTEST_CACHE_DIR, `${month}.json`);
+    fs.writeFileSync(file, JSON.stringify(data), 'utf8');
+    console.error(`\nSaved month backtest JSON: ${file}`);
+  } catch (err) {
+    console.error('writeBacktestCache (CLI):', err.message);
+  }
 }
 
 function main() {
@@ -52,12 +67,21 @@ function main() {
       wins: out.wins,
       losses: out.losses,
       pnl: out.totalPnl,
+      results: out.results,
     });
     console.error(`  ${backtestDate}  trades=${out.trades}  PnL=${out.totalPnl.toFixed(2)}`);
   }
 
   const totalPnl = rows.reduce((s, r) => s + r.pnl, 0);
   const totalTrades = rows.reduce((s, r) => s + r.trades, 0);
+
+  if (monthArg) {
+    writeBacktestCache(monthArg, {
+      month: monthArg,
+      byDate: rows,
+      totalPnl,
+    });
+  }
 
   console.log('\n--- v2 Backtest PnL (all dates) ---');
   console.log('Date       | Trades | Wins | Losses | PnL');

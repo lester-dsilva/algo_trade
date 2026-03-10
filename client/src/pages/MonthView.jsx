@@ -9,25 +9,96 @@ export default function MonthView() {
   const [data, setData] = useState(null);
   const [equity, setEquity] = useState(null);
   const [error, setError] = useState('');
+  const [cachedResult, setCachedResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     if (!month) return;
     setError('');
-    api.getBacktestMonth(month).then((cached) => {
-      if (cached) {
-        setData(cached);
-        return;
-      }
-      return api.backtestMonth(month).then((result) => {
-        setData(result);
-        api.getEquityCurve(month).then(setEquity).catch(() => setEquity(null));
+    setData(null);
+    setEquity(null);
+    setCachedResult(null);
+    setLoading(true);
+    api
+      .getBacktestMonth(month)
+      .then((cached) => {
+        if (cached) {
+          setCachedResult(cached);
+          setLoading(false);
+          return;
+        }
+        // No cached data — run backtest immediately
+        handleRunBacktest(month);
+      })
+      .catch((e) => {
+        setError(e.message);
+        setLoading(false);
       });
-    }).catch((e) => setError(e.message));
-    api.getEquityCurve(month).then(setEquity).catch(() => setEquity(null));
   }, [month]);
 
+  async function handleViewCached() {
+    if (!cachedResult || !month) return;
+    setData(cachedResult);
+    try {
+      const eq = await api.getEquityCurve(month);
+      setEquity(eq);
+    } catch {
+      setEquity(null);
+    }
+  }
+
+  async function handleRunBacktest(currentMonth = month) {
+    if (!currentMonth) return;
+    try {
+      setRunning(true);
+      setLoading(true);
+      setError('');
+      const result = await api.backtestMonth(currentMonth);
+      setData(result);
+      const eq = await api.getEquityCurve(currentMonth).catch(() => null);
+      setEquity(eq);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRunning(false);
+      setLoading(false);
+    }
+  }
+
   if (error) return <div className="page"><div className="error">{error}</div></div>;
-  if (!data) return <div className="page"><p>Loading…</p></div>;
+
+  if (loading && !data && !cachedResult) {
+    return (
+      <div className="page">
+        <p>Checking for existing backtest…</p>
+      </div>
+    );
+  }
+
+  if (!data && cachedResult) {
+    return (
+      <div className="page">
+        <nav className="muted"><Link to="/">Dashboard</Link> / {month}</nav>
+        <h1>Month: {month}</h1>
+        <p>Backtest results for this month are already saved.</p>
+        <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+          <button onClick={handleViewCached}>View saved results</button>
+          <button onClick={() => handleRunBacktest()} disabled={running}>
+            {running ? 'Running backtest…' : 'Re-run backtest for this month'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="page">
+        <p>Loading…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="page">

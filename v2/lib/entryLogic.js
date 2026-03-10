@@ -3,33 +3,30 @@
  *
  * Conditions:
  * - 4% move up within first 60 min (by ~10:15)
- * - Pullback or consolidation after that; pullback = day high to lowest low after that high (before entry); not more than 4%
- * - Enter on breakout candle (close > recent high)
+ * - Pullback or consolidation after that; pullback ≥1% from first-hour high (or consolidation = last 5 bars range ≤2%); pullback from day high not more than 4%
+ * - Enter on breakout candle only; breakout candle must close above day's high (so far)
  * - No entry after 12:30
- * - Day volume at entry >= 3x prev day volume
+ * - Day volume at entry >= 2.7x prev day volume
  * - Gap up <= 2% (day open vs prev close)
  * - Entry candle: no large wicks (each wick <= 35% of range)
- * - Breakout candle volume >= 1.5x avg of previous 5 bars
- * - SL below breakout candle low (with buffer); skip if SL distance > 2% or < min from entry
+ * - Breakout candle volume >= 1.1x avg of previous 5 bars
+ * - Fixed 1.5% SL below entry (always)
  * - Breakout close must be meaningfully above recent high (stronger breakout)
- * - Minimum SL distance from entry (avoid ultra-tight stops)
  */
 
 // First 60 min ≈ 9:15 to 10:15 = 20 bars (index 0..19)
 const FIRST_45_BARS = 20;
 const GAP_UP_MAX_PCT = 2;
 const MOVE_UP_MIN_PCT = 4;
-const PULLBACK_PCT = 2;       // low must have been at least 2% below high45
+const PULLBACK_PCT = 1;       // low must have been at least 1% below high45 (allows mild pullbacks like 10:12–10:39)
 const PULLBACK_MAX_FROM_TOP_PCT = 4; // do not take if pullback is more than 4% from day's top
 const WICK_MAX_PCT = 0.35;    // each wick at most 35% of candle range
 const VOL_AVG_LOOKBACK = 5;
-const BREAKOUT_VOL_MULT = 2;
+const BREAKOUT_VOL_MULT = 1.1; // allow breakouts with ≥1.1x avg(prev 5) so consolidation-breakout bars like 10:42 qualify
 const DAY_VOL_MULT = 2.7;     // day volume >= 2.7x prev day
-const CONSOLIDATION_RANGE_PCT = 1.5; // alternative: consolidation = range of last 5 bars < 1.5%
+const CONSOLIDATION_RANGE_PCT = 2;   // consolidation = range of last 5 bars <= 2% (includes 10:12–10:39 style)
 const MAX_ENTRY_TIME = '12:30';      // do not take trades after 12:30 (bar time <= 12:30 allowed)
-const MAX_SL_PCT = 2;                // do not take if SL is more than 2% from entry
-const MIN_SL_PCT = 0.8;              // do not take if SL is less than 0.8% from entry (avoid ultra-tight)
-const STOP_BUFFER_PCT = 0.25;         // place stop 0.25% below breakout candle low
+const FIXED_SL_PCT = 1.5;             // fixed SL 1.5% below entry
 const BREAKOUT_STRENGTH_MIN_PCT = 0.4; // close must be at least 0.4% above recent high
 
 /**
@@ -110,6 +107,10 @@ export function findEntry(bars, prevDay, opts = {}) {
     if (breakoutAbovePct < BREAKOUT_STRENGTH_MIN_PCT) { skip(`breakout strength ${breakoutAbovePct.toFixed(2)}% < 0.4%`); continue; }
     if (bar.close <= bar.open) { skip('bearish candle'); continue; }
 
+    // Entry only if breakout candle closes above day's high (so far before this bar)
+    const dayHighBeforeBar = i > 0 ? Math.max(...bars.slice(0, i).map((b) => b.high)) : bar.high;
+    if (bar.close <= dayHighBeforeBar) { skip(`close ${bar.close} not above day high ${dayHighBeforeBar}`); continue; }
+
     // No large wicks
     const range = bar.high - bar.low;
     if (range <= 0) { skip('zero range'); continue; }
@@ -124,11 +125,7 @@ export function findEntry(bars, prevDay, opts = {}) {
     if (avgVol5 > 0 && (bar.volume || 0) < BREAKOUT_VOL_MULT * avgVol5) { skip(`vol ${((bar.volume || 0) / avgVol5).toFixed(1)}x < ${BREAKOUT_VOL_MULT}x`); continue; }
 
     const entry = bar.close;
-    const stopRaw = bar.low * (1 - STOP_BUFFER_PCT / 100);
-    const stop = Math.round(stopRaw * 100) / 100;
-    const slPct = entry > 0 ? ((entry - stop) / entry) * 100 : 0;
-    if (slPct > MAX_SL_PCT) { skip(`SL ${slPct.toFixed(2)}% > 2%`); continue; }
-    if (slPct < MIN_SL_PCT) { skip(`SL ${slPct.toFixed(2)}% < 0.8%`); continue; }
+    const stop = Math.round(entry * (1 - FIXED_SL_PCT / 100) * 100) / 100;
 
     const result = {
       entry,

@@ -78,8 +78,14 @@ export default function Home() {
         <select
           value={selectedMonth}
           onChange={(e) => {
-            setSelectedMonth(e.target.value);
+            const month = e.target.value;
+            setSelectedMonth(month);
             setBacktestResult(null);
+            if (month) {
+              api.getBacktestMonth(month).then((cached) => {
+                if (cached) navigate(`/month/${month}`);
+              }).catch(() => {});
+            }
           }}
         >
           <option value="">Select month</option>
