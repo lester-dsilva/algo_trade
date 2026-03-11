@@ -27,6 +27,7 @@ const DAY_VOL_MULT = 2.7;     // day volume >= 2.7x prev day
 const CONSOLIDATION_RANGE_PCT = 2;   // consolidation = range of last 5 bars <= 2% (includes 10:12–10:39 style)
 const MAX_ENTRY_TIME = '12:30';      // do not take trades after 12:30 (bar time <= 12:30 allowed)
 const FIXED_SL_PCT = 1.5;             // fixed SL 1.5% below entry
+const MAX_DAY_MOVE_PCT = 14;          // skip entries if day move from open > 14% at entry
 const BREAKOUT_STRENGTH_MIN_PCT = 0.4; // close must be at least 0.4% above recent high
 
 /**
@@ -63,6 +64,10 @@ export function findEntry(bars, prevDay, opts = {}) {
     bar = bars[i];
     const barTime = (bar.time || '').slice(0, 5);
     if (barTime > MAX_ENTRY_TIME) { skip('after 12:30'); continue; }
+
+    // Skip if stock is already up more than MAX_DAY_MOVE_PCT% from day open at this bar (too extended)
+    const dayMovePct = dayOpen > 0 ? ((bar.close - dayOpen) / dayOpen) * 100 : 0;
+    if (dayMovePct > MAX_DAY_MOVE_PCT) { skip(`day move ${dayMovePct.toFixed(1)}% > ${MAX_DAY_MOVE_PCT}%`); continue; }
 
     const cumVol = bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
     if (prevVol > 0 && cumVol < DAY_VOL_MULT * prevVol) { skip(`day vol ${(cumVol / prevVol).toFixed(1)}x < ${DAY_VOL_MULT}x`); continue; }

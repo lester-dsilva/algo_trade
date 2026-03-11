@@ -19,6 +19,30 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR = path.join(ROOT, 'v2', 'data');
 const BACKTEST_CACHE_DIR = path.join(DATA_DIR, 'backtest_cache');
+const NSE_HOLIDAYS_PATH = path.join(ROOT, 'config', 'nse_holidays.json');
+
+let nseHolidaysSet = null;
+function loadNseHolidays() {
+  if (nseHolidaysSet) return nseHolidaysSet;
+  try {
+    if (!fs.existsSync(NSE_HOLIDAYS_PATH)) return new Set();
+    const raw = fs.readFileSync(NSE_HOLIDAYS_PATH, 'utf8');
+    const byYear = JSON.parse(raw);
+    const list = [];
+    for (const year of Object.keys(byYear)) {
+      for (const d of byYear[year]) list.push(d);
+    }
+    nseHolidaysSet = new Set(list);
+    return nseHolidaysSet;
+  } catch {
+    nseHolidaysSet = new Set();
+    return nseHolidaysSet;
+  }
+}
+function isNseHoliday(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  return loadNseHolidays().has(dateStr);
+}
 
 const TRADING_DAYS_PER_YEAR = 252;
 
@@ -54,6 +78,8 @@ const CAPITAL_PER_DAY = 50000;
 
 // In-memory load-month job status
 let loadMonthStatus = { running: false, month: null, startedAt: null };
+// In-memory load-date (single day) job status
+let loadDateStatus = { running: false, date: null, startedAt: null };
 
 function getDatesWithData(monthFilter) {
   if (!fs.existsSync(DATA_DIR)) return [];
@@ -120,7 +146,7 @@ apiRouter.get('/dates', (req, res) => {
   }
 });
 
-// GET /api/data-status?month=YYYY-MM — weekdays in month + which have data
+// GET /api/data-status?month=YYYY-MM — weekdays in month + which have data + isHoliday
 apiRouter.get('/data-status', (req, res) => {
   const month = req.query.month;
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
@@ -131,7 +157,11 @@ apiRouter.get('/data-status', (req, res) => {
     const weekdays = getWeekdaysInMonth(year, monthNum);
     const datesWithData = getDatesWithData(month);
     const haveData = new Set(datesWithData);
-    const status = weekdays.map((d) => ({ date: d, hasData: haveData.has(d) }));
+    const status = weekdays.map((d) => ({
+      date: d,
+      hasData: haveData.has(d),
+      isHoliday: isNseHoliday(d),
+    }));
     res.json({ month, weekdays, status, total: weekdays.length, withData: datesWithData.length });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -165,6 +195,38 @@ apiRouter.post('/load-month', (req, res) => {
 // GET /api/load-month/status
 apiRouter.get('/load-month/status', (req, res) => {
   res.json(loadMonthStatus);
+});
+
+// POST /api/load-date — spawn fetchBacktestData.js for a single date (YYYY-MM-DD)
+apiRouter.post('/load-date', (req, res) => {
+  const date = req.body?.date;
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Body { date: "YYYY-MM-DD" } required' });
+  }
+  if (loadDateStatus.running) {
+    return res.status(409).json({ error: 'Load date already in progress', status: loadDateStatus });
+  }
+  if (loadMonthStatus.running) {
+    return res.status(409).json({ error: 'Load month in progress; wait for it to finish' });
+  }
+  loadDateStatus = { running: true, date, startedAt: new Date().toISOString() };
+  const child = spawn('node', ['v2/scripts/fetchBacktestData.js', date], {
+    cwd: ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: true,
+  });
+  child.on('close', (code) => {
+    loadDateStatus = { running: false, date: loadDateStatus.date, startedAt: loadDateStatus.startedAt, finished: true, code };
+  });
+  child.on('error', () => {
+    loadDateStatus = { running: false, date: loadDateStatus.date, startedAt: loadDateStatus.startedAt, error: true };
+  });
+  res.status(202).json({ status: 'started', date });
+});
+
+// GET /api/load-date/status
+apiRouter.get('/load-date/status', (req, res) => {
+  res.json(loadDateStatus);
 });
 
 // GET /api/backtest-month?month=YYYY-MM — return cached result if available

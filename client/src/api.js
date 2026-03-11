@@ -35,6 +35,20 @@ export async function loadMonth(month) {
   return handleRes(r);
 }
 
+export async function getLoadDateStatus() {
+  const r = await fetch(`${API}/load-date/status`);
+  return handleRes(r);
+}
+
+export async function loadDate(date) {
+  const r = await fetch(`${API}/load-date`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date }),
+  });
+  return handleRes(r);
+}
+
 /** GET cached backtest for month; returns null if not cached (404). */
 export async function getBacktestMonth(month) {
   const r = await fetch(`${API}/backtest-month?month=${encodeURIComponent(month)}`);

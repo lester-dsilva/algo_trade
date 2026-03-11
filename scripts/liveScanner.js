@@ -74,6 +74,121 @@ function candleDateStr(c) {
   return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 }
 
+/** Return HH:MM:SS in IST from a Kite candle timestamp. */
+function candleTimeStr(c) {
+  if (!c || c.date == null) return '';
+  const d = c.date instanceof Date ? c.date : new Date(c.date);
+  return d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false });
+}
+
+/** Build normalized 3m bars from Kite historical candles for one date. */
+function buildHistoricalBars(candles, dateStr) {
+  const rows = [];
+  for (const c of candles || []) {
+    if (candleDateStr(c) !== dateStr) continue;
+    rows.push({
+      date: dateStr,
+      time: candleTimeStr(c),
+      open: Number.isFinite(c.open) ? c.open : 0,
+      high: Number.isFinite(c.high) ? c.high : 0,
+      low: Number.isFinite(c.low) ? c.low : 0,
+      close: Number.isFinite(c.close) ? c.close : 0,
+      volume: Number.isFinite(c.volume) ? c.volume : 0,
+    });
+  }
+  rows.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+  return rows;
+}
+
+/** Detect whether the current just-closed bar qualifies on price structure alone (ignoring volume filters). */
+function findEntryIgnoringVolumeForCurrentBar(bars, prevClose) {
+  if (!prevClose || prevClose <= 0) return null;
+
+  const FIRST_45_BARS = 20;
+  const GAP_UP_MAX_PCT = 2;
+  const MOVE_UP_MIN_PCT = 4;
+  const PULLBACK_PCT = 1;
+  const PULLBACK_MAX_FROM_TOP_PCT = 4;
+  const WICK_MAX_PCT = 0.35;
+  const VOL_AVG_LOOKBACK = 5;
+  const CONSOLIDATION_RANGE_PCT = 2;
+  const MAX_ENTRY_TIME = '12:30';
+  const FIXED_SL_PCT = 1.5;
+  const MAX_DAY_MOVE_PCT = 14;
+  const BREAKOUT_STRENGTH_MIN_PCT = 0.4;
+
+  if (!bars || bars.length < FIRST_45_BARS + VOL_AVG_LOOKBACK + 1) return null;
+
+  const i = bars.length - 1;
+  const bar = bars[i];
+  const dayOpen = bars[0].open;
+  const gapPct = prevClose > 0 ? ((dayOpen - prevClose) / prevClose) * 100 : 0;
+  if (gapPct > GAP_UP_MAX_PCT) return null;
+
+  const first45 = bars.slice(0, FIRST_45_BARS);
+  const high45 = Math.max(...first45.map((b) => b.high));
+  const movePct = dayOpen > 0 ? ((high45 - dayOpen) / dayOpen) * 100 : 0;
+  if (movePct < MOVE_UP_MIN_PCT) return null;
+
+  const barTime = (bar.time || '').slice(0, 5);
+  if (barTime > MAX_ENTRY_TIME) return null;
+
+  const dayMovePct = dayOpen > 0 ? ((bar.close - dayOpen) / dayOpen) * 100 : 0;
+  if (dayMovePct > MAX_DAY_MOVE_PCT) return null;
+
+  const dayHighSoFar = Math.max(...bars.slice(0, i + 1).map((b) => b.high));
+  let highBarIdx = i;
+  for (let k = 0; k <= i; k++) {
+    if (bars[k].high >= dayHighSoFar) {
+      highBarIdx = k;
+      break;
+    }
+  }
+
+  let pullbackLow = dayHighSoFar;
+  if (highBarIdx < i - 1) {
+    for (let j = highBarIdx + 1; j < i; j++) {
+      if (bars[j].low < pullbackLow) pullbackLow = bars[j].low;
+    }
+    const pullbackPct = dayHighSoFar > 0 ? ((dayHighSoFar - pullbackLow) / dayHighSoFar) * 100 : 0;
+    if (pullbackPct > PULLBACK_MAX_FROM_TOP_PCT) return null;
+  }
+
+  let hasPullback = false;
+  for (let j = FIRST_45_BARS; j < i; j++) {
+    if (bars[j].low <= high45 * (1 - PULLBACK_PCT / 100)) {
+      hasPullback = true;
+      break;
+    }
+  }
+
+  const recent5 = bars.slice(i - VOL_AVG_LOOKBACK, i);
+  const recentHigh = Math.max(...recent5.map((b) => b.high));
+  const recentLow = Math.min(...recent5.map((b) => b.low));
+  const rangePct = recent5[0]?.open > 0 ? ((recentHigh - recentLow) / recent5[0].open) * 100 : 100;
+  const hasConsolidation = rangePct <= CONSOLIDATION_RANGE_PCT;
+  if (!hasPullback && !hasConsolidation) return null;
+
+  const breakoutAbovePct = recentHigh > 0 ? ((bar.close - recentHigh) / recentHigh) * 100 : 0;
+  if (breakoutAbovePct < BREAKOUT_STRENGTH_MIN_PCT) return null;
+  if (bar.close <= bar.open) return null;
+
+  const dayHighBeforeBar = i > 0 ? Math.max(...bars.slice(0, i).map((b) => b.high)) : bar.high;
+  if (bar.close <= dayHighBeforeBar) return null;
+
+  const range = bar.high - bar.low;
+  if (range <= 0) return null;
+  const bodyTop = Math.max(bar.open, bar.close);
+  const bodyBottom = Math.min(bar.open, bar.close);
+  const upperWick = bar.high - bodyTop;
+  const lowerWick = bodyBottom - bar.low;
+  if (upperWick / range > WICK_MAX_PCT || lowerWick / range > WICK_MAX_PCT) return null;
+
+  const entry = bar.close;
+  const stop = Math.round(entry * (1 - FIXED_SL_PCT / 100) * 100) / 100;
+  return { entry, stop, time: bar.time, barIndex: i, date: bar.date };
+}
+
 /** Ms until 9:20 AM IST (defer today open fetch so day candle is stable). Returns 0 if already past. */
 function msUntil920Ist() {
   const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -370,11 +485,13 @@ async function main() {
 
   const seriesBySymbol = new Map();
   const signaled = new Set();
+  const pendingVolumeChecks = new Map();
   let barsClosedCount = 0;
   let lastHeartbeat = 0;
   let tickCount = 0;
   let volumeDebugCumulative = 0;
   let volumeDebugSum = 0;
+  let volumeCheckLoopBusy = false;
 
   // ── helpers ────────────────────────────────────────────────────────────────
   function pnlStr(pnl) {
@@ -386,6 +503,176 @@ async function main() {
     const msg = `${label} | realized=${pnlStr(t.realizedPnl)} | closed=${t.closedCount}(${t.wins}W/${t.losses}L) open=${t.openCount}`;
     console.error(msg);
     logToFile('summary', { label, ...t });
+  }
+
+  function hasPendingEntryForSymbolDate(symbol, date) {
+    for (const pending of pendingVolumeChecks.values()) {
+      if (pending.symbol === symbol && pending.date === date) return true;
+    }
+    return false;
+  }
+
+  async function fetchOfficialBarsForPendingEntry(symbol, date, targetTime5) {
+    const token = symbolToToken.get(symbol);
+    if (!token) return { ready: false, reason: 'missing_token' };
+    const from = new Date(`${date}T09:15:00+05:30`);
+    const to = new Date(`${date}T15:30:00+05:30`);
+    const candles = await kite.getHistoricalData(token, '3minute', from, to, false, false);
+    const officialBars = buildHistoricalBars(candles, date)
+      .filter((b) => (b.time || '').slice(0, 5) <= targetTime5);
+    const entryBar = officialBars.find((b) => (b.time || '').slice(0, 5) === targetTime5);
+    const latestBarTime = officialBars.length ? officialBars[officialBars.length - 1].time : null;
+    if (!entryBar) return { ready: false, reason: 'entry_bar_missing', officialBars };
+    const cumVol = officialBars.reduce((s, b) => s + (b.volume || 0), 0);
+    if (cumVol <= 0 || (entryBar.volume || 0) <= 0) {
+      return { ready: false, reason: 'volume_not_ready', officialBars, entryBar, cumVol, latestBarTime };
+    }
+    return { ready: true, officialBars, entryBar, cumVol, latestBarTime };
+  }
+
+  async function confirmPendingVolumeChecks() {
+    if (volumeCheckLoopBusy || pendingVolumeChecks.size === 0) return;
+    volumeCheckLoopBusy = true;
+    try {
+      for (const [key, pending] of [...pendingVolumeChecks.entries()]) {
+        pending.attempts += 1;
+        try {
+          logToFile('entry_pending_volume_poll', {
+            symbol: pending.symbol,
+            date: pending.date,
+            time: pending.time,
+            attempt: pending.attempts,
+            pendingCount: pendingVolumeChecks.size,
+            targetBarTime: pending.barTime5,
+          });
+          const official = await fetchOfficialBarsForPendingEntry(pending.symbol, pending.date, pending.barTime5);
+          if (!official.ready) {
+            logToFile('entry_pending_volume_poll_result', {
+              symbol: pending.symbol,
+              date: pending.date,
+              time: pending.time,
+              attempt: pending.attempts,
+              ready: false,
+              reason: official.reason,
+              officialBarCount: official.officialBars?.length ?? 0,
+              latestOfficialBarTime: official.latestBarTime ?? null,
+              officialCumVol: official.cumVol ?? 0,
+              officialEntryBarVol: official.entryBar?.volume ?? 0,
+            });
+            if (pending.attempts === 1 || pending.attempts % 6 === 0) {
+              console.error(`[ENTRY_WAIT] ${pending.symbol} @ ${pending.time} | waiting for historical volume (${official.reason}) | attempt ${pending.attempts} | bars=${official.officialBars?.length ?? 0} latest=${official.latestBarTime ?? '-'} cumVol=${official.cumVol ?? 0} entryBarVol=${official.entryBar?.volume ?? 0}`);
+              logToFile('entry_pending_volume_wait', {
+                symbol: pending.symbol,
+                date: pending.date,
+                time: pending.time,
+                attempt: pending.attempts,
+                reason: official.reason,
+                officialBarCount: official.officialBars?.length ?? 0,
+                latestOfficialBarTime: official.latestBarTime ?? null,
+                officialCumVol: official.cumVol ?? 0,
+                officialEntryBarVol: official.entryBar?.volume ?? 0,
+              });
+            }
+            continue;
+          }
+
+          logToFile('entry_pending_volume_poll_result', {
+            symbol: pending.symbol,
+            date: pending.date,
+            time: pending.time,
+            attempt: pending.attempts,
+            ready: true,
+            officialBarCount: official.officialBars.length,
+            latestOfficialBarTime: official.latestBarTime ?? null,
+            officialCumVol: official.cumVol,
+            officialEntryBarVol: official.entryBar.volume,
+            prevDayVol: pending.prevDay.volume ?? 0,
+            dayVolMultiple: pending.prevDay.volume > 0 ? Number((official.cumVol / pending.prevDay.volume).toFixed(3)) : null,
+          });
+
+          const officialResult = findEntry(official.officialBars, pending.prevDay);
+          const officialTime5 = (officialResult?.time || '').slice(0, 5);
+          if (!officialResult || officialTime5 !== pending.barTime5) {
+            console.error(`[ENTRY_SKIP] ${pending.symbol} @ ${pending.time} | historical volume available but entry not confirmed`);
+            logToFile('entry_volume_rejected', {
+              symbol: pending.symbol,
+              date: pending.date,
+              time: pending.time,
+              attempt: pending.attempts,
+              reason: officialResult ? `entry_time_${officialTime5}` : 'no_entry_after_historical_volume',
+              cumVol: official.cumVol,
+              entryBarVol: official.entryBar?.volume ?? 0,
+              prevDayVol: pending.prevDay.volume ?? 0,
+              dayVolMultiple: pending.prevDay.volume > 0 ? Number((official.cumVol / pending.prevDay.volume).toFixed(3)) : null,
+            });
+            pendingVolumeChecks.delete(key);
+            continue;
+          }
+
+          if (signaled.has(key)) {
+            pendingVolumeChecks.delete(key);
+            continue;
+          }
+
+          signaled.add(key);
+          pendingVolumeChecks.delete(key);
+
+          const entryPrice = officialResult.entry;
+          const stop = officialResult.stop;
+          const firstTargetPrice = Math.round(entryPrice * 1.03 * 100) / 100;
+          const slPct = entryPrice > 0 ? ((entryPrice - stop) / entryPrice * 100).toFixed(2) : '?';
+          const qty = Math.floor(POSITION_VALUE / entryPrice);
+
+          const pos = addPosition({
+            symbol: pending.symbol,
+            side: 'long',
+            entryTime: `${pending.date} ${pending.time}`,
+            entryPrice,
+            stop,
+            target: firstTargetPrice,
+            signalType: 'v2_breakout',
+          });
+
+          const msg = `[ENTRY] ${pending.symbol} #${pos.id} @ ${pending.time} | entry=${entryPrice} SL=${stop} (${slPct}%) 3%→trail | qty=${qty} | cumVol=${official.cumVol} | entryBarVol=${official.entryBar.volume} | volume=historical_api`;
+          console.error(msg);
+          logToFile('entry', {
+            symbol: pending.symbol,
+            date: pending.date,
+            time: pending.time,
+            id: pos.id,
+            entry: entryPrice,
+            stop,
+            target: firstTargetPrice,
+            slPct: parseFloat(slPct),
+            qty,
+            cumVol: official.cumVol,
+            entryBarVol: official.entryBar.volume,
+            prevDayVol: pending.prevDay.volume ?? 0,
+            dayVolMultiple: pending.prevDay.volume > 0 ? Number((official.cumVol / pending.prevDay.volume).toFixed(3)) : null,
+            volumeSource: 'historical_api',
+            attempts: pending.attempts,
+          });
+          if (!telegramConfigured()) {
+            logToFile('telegram_skip', { reason: 'not_configured', symbol: pending.symbol, time: pending.time, msg: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env' });
+          }
+          sendAlert(`ENTRY ${pending.symbol} #${pos.id} @ ${pending.time} | entry=${entryPrice} SL=${stop} 3%→trail`);
+        } catch (e) {
+          if (pending.attempts === 1 || pending.attempts % 6 === 0) {
+            const reason = e?.message ?? String(e);
+            console.error(`[ENTRY_WAIT] ${pending.symbol} @ ${pending.time} | historical volume retry failed: ${reason} | attempt ${pending.attempts}`);
+            logToFile('entry_pending_volume_retry_error', {
+              symbol: pending.symbol,
+              date: pending.date,
+              time: pending.time,
+              attempt: pending.attempts,
+              reason,
+            });
+          }
+        }
+      }
+    } finally {
+      volumeCheckLoopBusy = false;
+    }
   }
 
   // ── EOD sweep at 15:30 IST ─────────────────────────────────────────────────
@@ -424,6 +711,7 @@ async function main() {
         bars: barsClosedCount,
         symbols: symCount,
         ticks: tickCount,
+        pending_volume_checks: pendingVolumeChecks.size,
         volume_debug: { cumulative_diff: volumeDebugCumulative, sum_quantity: volumeDebugSum },
         ...t,
       });
@@ -500,41 +788,50 @@ async function main() {
       }
     }
     if (!skipEntry && prevDay && todayBars.length >= 21) {
-      const result = findEntry(todayBars, prevDay);
+      const result = findEntryIgnoringVolumeForCurrentBar(todayBars, prevClose);
       const resultTime5 = (result?.time || '').slice(0, 5);
       const barTime5 = (time || '').slice(0, 5);
       if (result && resultTime5 === barTime5) {
         const key = `${symbol}|${date}|v2_breakout|${time}`;
-        if (!signaled.has(key)) {
-          signaled.add(key);
-
-          const entryPrice = result.entry;
-          const stop = result.stop;
-          const firstTargetPrice = Math.round(entryPrice * 1.03 * 100) / 100;
-          const slPct = entryPrice > 0 ? ((entryPrice - stop) / entryPrice * 100).toFixed(2) : '?';
-          const qty = Math.floor(POSITION_VALUE / entryPrice);
-          const cumVol = todayBars.reduce((s, b) => s + (b.volume ?? 0), 0);
-
-          const pos = addPosition({
+        if (!signaled.has(key) && !pendingVolumeChecks.has(key) && !hasPendingEntryForSymbolDate(symbol, date)) {
+          const liveCumVol = todayBars.reduce((s, b) => s + (b.volume ?? 0), 0);
+          pendingVolumeChecks.set(key, {
             symbol,
-            side: 'long',
-            entryTime: `${date} ${time}`,
-            entryPrice,
-            stop,
-            target: firstTargetPrice,
-            signalType: 'v2_breakout',
+            date,
+            time,
+            barTime5,
+            prevDay,
+            attempts: 0,
           });
-
-          const msg = `[ENTRY] ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} (${slPct}%) 3%→trail | qty=${qty} | cumVol=${cumVol}`;
-          console.error(msg);
-          logToFile('entry', { symbol, date, time, id: pos.id, entry: entryPrice, stop, target: firstTargetPrice, slPct: parseFloat(slPct), qty, cumVol });
-          if (!telegramConfigured()) {
-            logToFile('telegram_skip', { reason: 'not_configured', symbol, time, msg: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env' });
-          }
-          sendAlert(`ENTRY ${symbol} #${pos.id} @ ${time} | entry=${entryPrice} SL=${stop} 3%→trail`);
+          console.error(`[ENTRY_WAIT] ${symbol} @ ${time} | price structure matched, waiting for historical day volume + entry candle volume`);
+          logToFile('entry_pending_volume', {
+            symbol,
+            date,
+            time,
+            key,
+            liveCumVol,
+            liveEntryBarVol: volume,
+            prevDayVol: prevVol,
+            liveDayVolMultiple: prevVol > 0 ? Number((liveCumVol / prevVol).toFixed(3)) : null,
+            volumeSource: 'waiting_for_historical_api',
+            pendingCount: pendingVolumeChecks.size,
+          });
+          confirmPendingVolumeChecks().catch((e) => {
+            const reason = e?.message ?? String(e);
+            console.error('confirmPendingVolumeChecks failed', reason);
+            logToFile('entry_pending_volume_fatal', reason);
+          });
+        } else {
+          logToFile('entry_pending_volume_skip_queue', {
+            symbol,
+            date,
+            time,
+            key,
+            alreadySignaled: signaled.has(key),
+            alreadyPendingForKey: pendingVolumeChecks.has(key),
+            alreadyPendingForSymbolDate: hasPendingEntryForSymbolDate(symbol, date),
+          });
         }
-      } else if (result && resultTime5 !== barTime5) {
-        logToFile('entry_bar_mismatch', { symbol, date, entryBarTime: resultTime5, currentBarTime: barTime5, reason: 'Alert only when current bar is the entry bar' });
       }
     }
   }, {
@@ -576,6 +873,14 @@ async function main() {
     }
     logToFile('connect', msg);
   });
+
+  setInterval(() => {
+    confirmPendingVolumeChecks().catch((e) => {
+      const reason = e?.message ?? String(e);
+      console.error('confirmPendingVolumeChecks failed', reason);
+      logToFile('entry_pending_volume_fatal', reason);
+    });
+  }, 5000);
 
   ticker.on('disconnect', (err) => {
     let reason = '(no reason)';
