@@ -4,8 +4,10 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
+import { Worker } from 'worker_threads';
 import { Router } from 'express';
 import {
   hasBacktestData,
@@ -19,6 +21,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR = path.join(ROOT, 'v2', 'data');
 const BACKTEST_CACHE_DIR = path.join(DATA_DIR, 'backtest_cache');
+const BACKTEST_BASELINES_DIR = path.join(DATA_DIR, 'backtest_baselines');
+const BACKTEST_WORKER_PATH = path.join(ROOT, 'v2', 'scripts', 'backtestWorker.js');
 const NSE_HOLIDAYS_PATH = path.join(ROOT, 'config', 'nse_holidays.json');
 
 let nseHolidaysSet = null;
@@ -118,6 +122,38 @@ function getMonthsWithData() {
     set.add(d.slice(0, 7)); // YYYY-MM
   }
   return [...set].sort().reverse();
+}
+
+/** Sanitize baseline name: alphanumeric and underscore only. */
+function sanitizeBaselineName(name) {
+  if (typeof name !== 'string') return '';
+  return name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'baseline';
+}
+
+function runBacktestAllParallel(dates) {
+  if (dates.length === 0) return Promise.resolve([]);
+  const concurrency = Math.min(Math.max(1, os.cpus().length), dates.length);
+  const chunkSize = Math.ceil(dates.length / concurrency);
+  const chunks = [];
+  for (let i = 0; i < dates.length; i += chunkSize) {
+    chunks.push(dates.slice(i, i + chunkSize));
+  }
+  const workerPromises = chunks.map((chunk) => {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(BACKTEST_WORKER_PATH, {
+        workerData: { dates: chunk },
+        resourceLimits: { stackSizeMb: 8 },
+      });
+      worker.on('message', (msg) => {
+        resolve(msg.results || []);
+      });
+      worker.on('error', reject);
+      worker.on('exit', (code) => {
+        if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
+      });
+    });
+  });
+  return Promise.all(workerPromises).then((arrays) => arrays.flat());
 }
 
 export const apiRouter = Router();
@@ -482,6 +518,123 @@ apiRouter.get('/equity-curve', (req, res) => {
       if (dd > maxDrawdown) maxDrawdown = dd;
     }
     res.json({ month, sharpe, maxDrawdown, points });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/baselines/:name — get full baseline (byMonth, trades) by name
+apiRouter.get('/baselines/:name', (req, res) => {
+  const name = sanitizeBaselineName(req.params.name);
+  if (!name) return res.status(400).json({ error: 'Invalid baseline name' });
+  try {
+    const filePath = path.join(BACKTEST_BASELINES_DIR, `${name}.json`);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Baseline not found' });
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const data = JSON.parse(raw);
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/baselines — list saved baseline names and metadata
+apiRouter.get('/baselines', (req, res) => {
+  try {
+    if (!fs.existsSync(BACKTEST_BASELINES_DIR)) {
+      return res.json({ names: [], baselines: [] });
+    }
+    const files = fs.readdirSync(BACKTEST_BASELINES_DIR).filter((f) => f.endsWith('.json'));
+    const names = files.map((f) => f.slice(0, -5));
+    const baselines = [];
+    for (const name of names) {
+      try {
+        const raw = fs.readFileSync(path.join(BACKTEST_BASELINES_DIR, name + '.json'), 'utf8');
+        const data = JSON.parse(raw);
+        baselines.push({
+          name,
+          savedAt: data.savedAt || null,
+          totalPnl: data.totalPnl,
+          totalTrades: data.totalTrades,
+        });
+      } catch {
+        baselines.push({ name, savedAt: null });
+      }
+    }
+    res.json({ names, baselines });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/backtest-all-save-baseline — run backtest for all dates in parallel, save baseline by name
+apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
+  const name = sanitizeBaselineName(req.body?.name);
+  if (!name) {
+    return res.status(400).json({ error: 'Body { name: "baseline_name" } required (alphanumeric + underscore)' });
+  }
+  try {
+    const dates = getDatesWithData(null);
+    if (dates.length === 0) {
+      return res.status(404).json({ error: 'No backtest data in v2/data. Load data first.' });
+    }
+    const allResults = await runBacktestAllParallel(dates);
+    const byMonth = new Map();
+    const allTrades = [];
+    for (const r of allResults) {
+      if (r.error) continue;
+      const month = r.date.slice(0, 7);
+      if (!byMonth.has(month)) byMonth.set(month, { trades: 0, wins: 0, losses: 0, pnl: 0, dates: 0 });
+      const row = byMonth.get(month);
+      row.trades += r.trades || 0;
+      row.wins += r.wins || 0;
+      row.losses += r.losses || 0;
+      row.pnl += r.totalPnl || 0;
+      row.dates += 1;
+      if (r.results?.length) {
+        for (const t of r.results) {
+          allTrades.push({
+            date: r.date,
+            symbol: t.symbol,
+            time: t.time,
+            entry: t.entry,
+            stop: t.stop,
+            exitReason: t.exitReason,
+            exitPrice: t.exitPrice,
+            pnl: t.pnl,
+            qty: t.qty,
+          });
+        }
+      }
+    }
+    const months = [...byMonth.keys()].sort();
+    const byMonthArray = months.map((month) => {
+      const row = byMonth.get(month);
+      return { month, dates: row.dates, trades: row.trades, wins: row.wins, losses: row.losses, pnl: row.pnl };
+    });
+    const totalPnl = byMonthArray.reduce((s, r) => s + r.pnl, 0);
+    const totalTrades = byMonthArray.reduce((s, r) => s + r.trades, 0);
+    const baseline = {
+      savedAt: new Date().toISOString(),
+      name,
+      totalPnl,
+      totalTrades,
+      byMonth: byMonthArray,
+      trades: allTrades,
+    };
+    if (!fs.existsSync(BACKTEST_BASELINES_DIR)) {
+      fs.mkdirSync(BACKTEST_BASELINES_DIR, { recursive: true });
+    }
+    const filePath = path.join(BACKTEST_BASELINES_DIR, `${name}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(baseline, null, 2), 'utf8');
+    res.json({
+      name,
+      filePath,
+      totalPnl,
+      totalTrades,
+      datesRun: dates.length,
+      byMonth: byMonthArray,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

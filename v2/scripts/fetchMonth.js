@@ -15,9 +15,20 @@ import { spawn } from 'child_process';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR = path.join(ROOT, 'v2', 'data');
+const HOLIDAYS_PATH = path.join(ROOT, 'config', 'nse_holidays.json');
 
-function getWeekdaysInMonth(year, month) {
+function loadHolidaySet(year) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(HOLIDAYS_PATH, 'utf8'));
+    return new Set(raw[String(year)] || []);
+  } catch {
+    return new Set();
+  }
+}
+
+function getTradingDaysInMonth(year, month) {
   const dates = [];
+  const holidays = loadHolidaySet(year);
   const lastDay = new Date(year, month, 0).getDate();
   for (let d = 1; d <= lastDay; d++) {
     const date = new Date(year, month - 1, d);
@@ -26,7 +37,8 @@ function getWeekdaysInMonth(year, month) {
       const y = date.getFullYear();
       const m = String(date.getMonth() + 1).padStart(2, '0');
       const day = String(d).padStart(2, '0');
-      dates.push(`${y}-${m}-${day}`);
+      const dateStr = `${y}-${m}-${day}`;
+      if (!holidays.has(dateStr)) dates.push(dateStr);
     }
   }
   return dates;
@@ -47,10 +59,9 @@ function hasDataAlready(dateStr) {
 
 function runFetch(dateStr) {
   return new Promise((resolve, reject) => {
-    const child = spawn('node', ['v2/scripts/fetchBacktestData.js', dateStr], {
+    const child = spawn(process.execPath, [path.join(ROOT, 'v2', 'scripts', 'fetchBacktestData.js'), dateStr], {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
     });
     let stderr = '';
     let stdout = '';
@@ -74,11 +85,11 @@ async function main() {
     process.exit(1);
   }
   const [year, month] = monthArg.split('-').map(Number);
-  const allDays = getWeekdaysInMonth(year, month);
+  const allDays = getTradingDaysInMonth(year, month);
   const toFetch = allDays.filter((d) => !hasDataAlready(d));
   const skipped = allDays.length - toFetch.length;
 
-  console.error(`Month: ${monthArg} | Weekdays: ${allDays.length} | Already have data: ${skipped} | To fetch: ${toFetch.length}`);
+  console.error(`Month: ${monthArg} | Trading days: ${allDays.length} | Already have data: ${skipped} | To fetch: ${toFetch.length}`);
   if (toFetch.length === 0) {
     console.error('Nothing to fetch.');
     return;

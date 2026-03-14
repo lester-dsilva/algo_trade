@@ -88,3 +88,25 @@ export async function getEquityCurve(month) {
   const r = await fetch(`${API}/equity-curve?month=${encodeURIComponent(month)}`);
   return handleRes(r);
 }
+
+/** GET list of saved baselines (names + metadata). */
+export async function getBaselines() {
+  const r = await fetch(`${API}/baselines`);
+  return handleRes(r);
+}
+
+/** GET full baseline by name (byMonth, trades, etc.). */
+export async function getBaseline(name) {
+  const r = await fetch(`${API}/baselines/${encodeURIComponent(name)}`);
+  return handleRes(r);
+}
+
+/** POST run backtest for all available dates in parallel and save baseline by name. */
+export async function runBacktestAllSaveBaseline(name) {
+  const r = await fetch(`${API}/backtest-all-save-baseline`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name || 'baseline' }),
+  });
+  return handleRes(r);
+}

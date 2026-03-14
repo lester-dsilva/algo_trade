@@ -14,9 +14,9 @@
  * - Breakout close must be meaningfully above recent high (stronger breakout)
  */
 
-// First 60 min ≈ 9:15 to 10:15 = 20 bars (index 0..19)
+// First 60 min = 20 bars (9:15–10:15). Entry loop from bar 20 (10:18).
 const FIRST_45_BARS = 20;
-const GAP_UP_MAX_PCT = 2;
+const GAP_UP_MAX_PCT = 3;
 const MOVE_UP_MIN_PCT = 4;
 const PULLBACK_PCT = 1;       // low must have been at least 1% below high45 (allows mild pullbacks like 10:12–10:39)
 const PULLBACK_MAX_FROM_TOP_PCT = 4; // do not take if pullback is more than 4% from day's top
@@ -44,7 +44,7 @@ export function findEntry(bars, prevDay, opts = {}) {
     if (debug && bar) failedBars.push({ time: (bar.time || '').slice(0, 5), reason });
   }
 
-  if (!bars || bars.length < FIRST_45_BARS + VOL_AVG_LOOKBACK + 1) return null;
+  if (!bars || bars.length < FIRST_45_BARS + 1) return null;
   const dayOpen = bars[0].open;
   const prevClose = prevDay.close;
   const prevVol = prevDay.volume || 0;
@@ -59,8 +59,7 @@ export function findEntry(bars, prevDay, opts = {}) {
   if (movePct < MOVE_UP_MIN_PCT) return null;
 
   let bar;
-  // From bar 15 onward, look for pullback then breakout
-  for (let i = FIRST_45_BARS + VOL_AVG_LOOKBACK; i < bars.length; i++) {
+  for (let i = FIRST_45_BARS; i < bars.length; i++) {
     bar = bars[i];
     const barTime = (bar.time || '').slice(0, 5);
     if (barTime > MAX_ENTRY_TIME) { skip('after 12:30'); continue; }
@@ -90,7 +89,7 @@ export function findEntry(bars, prevDay, opts = {}) {
       const pullbackPct = dayHighSoFar > 0 ? ((dayHighSoFar - pullbackLow) / dayHighSoFar) * 100 : 0;
       if (pullbackPct > PULLBACK_MAX_FROM_TOP_PCT) { skip(`pullback from high ${pullbackPct.toFixed(1)}% > 4%`); continue; }
     }
-    // Pullback: at some point between 15 and i, low was at least PULLBACK_PCT below high45
+    // Pullback: at some point between FIRST_45_BARS and i, low was at least PULLBACK_PCT below high45
     let hasPullback = false;
     for (let j = FIRST_45_BARS; j < i; j++) {
       if (bars[j].low <= high45 * (1 - PULLBACK_PCT / 100)) {

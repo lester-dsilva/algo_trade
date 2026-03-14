@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import * as api from '../api';
 
 export default function Home() {
@@ -14,12 +14,17 @@ export default function Home() {
   const [loadDateStatus, setLoadDateStatus] = useState(null);
   const [loadingDate, setLoadingDate] = useState(null);
   const [error, setError] = useState('');
+  const [baselineName, setBaselineName] = useState('');
+  const [baselineLoading, setBaselineLoading] = useState(false);
+  const [baselineResult, setBaselineResult] = useState(null);
+  const [baselines, setBaselines] = useState([]);
 
   useEffect(() => {
     api.getMonths().then((d) => {
       setMonths(d.months || []);
       if (d.months?.length && !selectedMonth) setSelectedMonth(d.months[0]);
     }).catch((e) => setError(e.message));
+    api.getBaselines().then((d) => setBaselines(d.baselines || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -94,6 +99,21 @@ export default function Home() {
     }).catch((e) => {
       setError(e.message);
       setLoading(false);
+    });
+  };
+
+  const handleRunAllSaveBaseline = () => {
+    const name = (baselineName || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline';
+    setBaselineLoading(true);
+    setError('');
+    setBaselineResult(null);
+    api.runBacktestAllSaveBaseline(name).then((data) => {
+      setBaselineResult(data);
+      setBaselineLoading(false);
+      api.getBaselines().then((d) => setBaselines(d.baselines || [])).catch(() => {});
+    }).catch((e) => {
+      setError(e.message);
+      setBaselineLoading(false);
     });
   };
 
@@ -198,6 +218,50 @@ export default function Home() {
           </button>
         </section>
       )}
+
+      <section className="card">
+        <h2>Save baseline (all months)</h2>
+        <p className="muted">Run backtest for all available dates in parallel and save a named baseline.</p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+          <input
+            type="text"
+            placeholder="Baseline name (e.g. v1_entry_logic)"
+            value={baselineName}
+            onChange={(e) => setBaselineName(e.target.value)}
+            style={{ padding: '0.35rem 0.5rem', minWidth: '180px' }}
+          />
+          <button
+            type="button"
+            onClick={handleRunAllSaveBaseline}
+            disabled={baselineLoading || months.length === 0}
+          >
+            {baselineLoading ? 'Running backtest…' : 'Run all & save baseline'}
+          </button>
+        </div>
+        {baselineResult && (
+          <div style={{ marginTop: '0.75rem', padding: '0.5rem', background: '#f0f8f0', borderRadius: 4 }}>
+            <strong>Saved:</strong> {baselineResult.name} — ₹{baselineResult.totalPnl?.toFixed(2)} ({baselineResult.totalTrades} trades, {baselineResult.datesRun} dates)
+          </div>
+        )}
+        {baselines.length > 0 && (
+          <div style={{ marginTop: '0.75rem' }}>
+            <h3 style={{ fontSize: '1rem', marginBottom: '0.35rem' }}>Saved baselines</h3>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.9rem' }}>
+              {baselines.map((b) => (
+                <li key={b.name} style={{ padding: '0.2rem 0' }}>
+                  <Link to={`/baseline/${encodeURIComponent(b.name)}`} style={{ fontWeight: 500 }}>
+                    {b.name}
+                  </Link>
+                  <span className="muted">
+                    {b.savedAt != null && ` — ${new Date(b.savedAt).toLocaleString()}`}
+                    {b.totalPnl != null && ` — ₹${b.totalPnl.toFixed(2)} (${b.totalTrades} trades)`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
