@@ -16,6 +16,7 @@ import {
   list3mSymbols,
 } from '../../v2/lib/loadBacktestData.js';
 import { runBacktestForDate } from '../../v2/scripts/runBacktest.js';
+import { findEntry } from '../../v2/lib/entryLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -78,7 +79,9 @@ function writeBacktestCache(month, data) {
     console.error('writeBacktestCache:', err.message);
   }
 }
-const CAPITAL_PER_DAY = 50000;
+const TOTAL_CAPITAL = 300000;       // ₹3 lakh
+const CAPITAL_PER_TRADE = 50000;   // ₹50k deployed per trade
+const CHARGES_PER_TRADE = 30;      // ₹30 per trade
 
 // In-memory load-month job status
 let loadMonthStatus = { running: false, month: null, startedAt: null };
@@ -124,6 +127,35 @@ function getMonthsWithData() {
   return [...set].sort().reverse();
 }
 
+/** Return list of months for the selector: from earliest (data or 2024-01) through current + 3 months. */
+function getMonthsForSelector() {
+  const withData = getMonthsWithData();
+  const now = new Date();
+  const endYear = now.getFullYear();
+  const endMonth = now.getMonth() + 1 + 3; // current + 3
+  let startY = 2024;
+  let startM = 1;
+  if (withData.length > 0) {
+    const [y, m] = withData[withData.length - 1].split('-').map(Number);
+    startY = y;
+    startM = m;
+  }
+  const months = [];
+  let y = startY;
+  let m = startM;
+  const endY = endMonth > 12 ? endYear + 1 : endYear;
+  const endM = endMonth > 12 ? endMonth - 12 : endMonth;
+  while (y < endY || (y === endY && m <= endM)) {
+    months.push(`${y}-${String(m).padStart(2, '0')}`);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return months.sort().reverse();
+}
+
 /** Sanitize baseline name: alphanumeric and underscore only. */
 function sanitizeBaselineName(name) {
   if (typeof name !== 'string') return '';
@@ -158,10 +190,10 @@ function runBacktestAllParallel(dates) {
 
 export const apiRouter = Router();
 
-// GET /api/months — list months that have at least one date with data
+// GET /api/months — list months for selector (range: earliest data or 2024-01 through current+3), so user can load any month
 apiRouter.get('/months', (req, res) => {
   try {
-    const months = getMonthsWithData();
+    const months = getMonthsForSelector();
     res.json({ months });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -434,14 +466,29 @@ apiRouter.get('/chart/3m', (req, res) => {
   if (!hasBacktestData(date)) {
     return res.status(404).json({ error: 'No backtest data for this date' });
   }
+  const norm = (s) => s.toLowerCase().replace(/&/g, '').replace(/\s/g, '');
   try {
     const bars = load3mForSymbol(date, symbol.trim());
     if (!bars || bars.length === 0) {
       return res.status(404).json({ error: 'No 3m data for this symbol on this date' });
     }
+    const prevDayOhlc = loadPrevDayOhlc(date);
+    let prev = prevDayOhlc?.get(symbol.trim());
+    if (!prev && prevDayOhlc) {
+      for (const [k, v] of prevDayOhlc) {
+        if (norm(k) === norm(symbol)) {
+          prev = v;
+          break;
+        }
+      }
+    }
+    let failedBars = [];
+    if (prev && prev.close > 0) {
+      const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume || 0 }, { debug: true });
+      if (entryResult?.failedBars?.length) failedBars = entryResult.failedBars;
+    }
     const out = runBacktestForDate(date, { quiet: true });
     if (!out) return res.status(404).json({ error: 'No backtest results' });
-    const norm = (s) => s.toLowerCase().replace(/&/g, '').replace(/\s/g, '');
     const trade = out.results.find((r) => norm(r.symbol) === norm(symbol));
     const entry = trade
       ? { price: trade.entry, barIndex: trade.barIndex }
@@ -450,7 +497,7 @@ apiRouter.get('/chart/3m', (req, res) => {
     const exit = trade
       ? { price: trade.exitPrice, reason: trade.exitReason, barIndex: trade.exitBarIndex }
       : null;
-    res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit });
+    res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit, failedBars });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -465,8 +512,12 @@ apiRouter.get('/equity-curve', (req, res) => {
   try {
     const cached = readBacktestCache(month);
     if (cached?.byDate?.length) {
-      const rows = cached.byDate.map((d) => ({ date: d.date, pnl: d.pnl }));
-      const dailyReturns = rows.map((r) => r.pnl / CAPITAL_PER_DAY);
+      const rows = cached.byDate.map((d) => {
+        const trades = d.trades ?? 0;
+        const netPnl = (d.pnl ?? 0) - trades * CHARGES_PER_TRADE;
+        return { date: d.date, pnl: d.pnl, netPnl, trades };
+      });
+      const dailyReturns = rows.map((r) => r.netPnl / CAPITAL_PER_TRADE);
       const meanReturn = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
       const variance =
         dailyReturns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / (dailyReturns.length - 1) || 0;
@@ -474,8 +525,8 @@ apiRouter.get('/equity-curve', (req, res) => {
       const sharpe = stdReturn > 0 ? (meanReturn / stdReturn) * Math.sqrt(TRADING_DAYS_PER_YEAR) : null;
       let cum = 0;
       const points = rows.map((r) => {
-        cum += r.pnl;
-        return { date: r.date, pnl: r.pnl, cumulativePnl: cum };
+        cum += r.netPnl;
+        return { date: r.date, pnl: r.netPnl, cumulativePnl: cum };
       });
       let peak = 0;
       let maxDrawdown = 0;
@@ -484,7 +535,8 @@ apiRouter.get('/equity-curve', (req, res) => {
         const dd = peak - p.cumulativePnl;
         if (dd > maxDrawdown) maxDrawdown = dd;
       }
-      return res.json({ month, sharpe, maxDrawdown, points });
+      const returnPct = points.length ? (points[points.length - 1].cumulativePnl / TOTAL_CAPITAL) * 100 : null;
+      return res.json({ month, sharpe, maxDrawdown, returnPct, points });
     }
     const dates = getDatesWithData(month);
     if (dates.length === 0) {
@@ -494,12 +546,14 @@ apiRouter.get('/equity-curve', (req, res) => {
     for (const backtestDate of dates) {
       const out = runBacktestForDate(backtestDate, { quiet: true });
       if (!out) continue;
-      rows.push({ date: backtestDate, pnl: out.totalPnl });
+      const trades = out.trades ?? 0;
+      const netPnl = (out.totalPnl ?? 0) - trades * CHARGES_PER_TRADE;
+      rows.push({ date: backtestDate, pnl: out.totalPnl, netPnl, trades: out.trades });
     }
     if (rows.length === 0) {
       return res.json({ month, sharpe: null, maxDrawdown: 0, points: [] });
     }
-    const dailyReturns = rows.map((r) => r.pnl / CAPITAL_PER_DAY);
+    const dailyReturns = rows.map((r) => r.netPnl / CAPITAL_PER_TRADE);
     const meanReturn = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
     const variance =
       dailyReturns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / (dailyReturns.length - 1) || 0;
@@ -507,8 +561,8 @@ apiRouter.get('/equity-curve', (req, res) => {
     const sharpe = stdReturn > 0 ? (meanReturn / stdReturn) * Math.sqrt(TRADING_DAYS_PER_YEAR) : null;
     let cum = 0;
     const points = rows.map((r) => {
-      cum += r.pnl;
-      return { date: r.date, pnl: r.pnl, cumulativePnl: cum };
+      cum += r.netPnl;
+      return { date: r.date, pnl: r.netPnl, cumulativePnl: cum };
     });
     let peak = 0;
     let maxDrawdown = 0;
@@ -517,7 +571,8 @@ apiRouter.get('/equity-curve', (req, res) => {
       const dd = peak - p.cumulativePnl;
       if (dd > maxDrawdown) maxDrawdown = dd;
     }
-    res.json({ month, sharpe, maxDrawdown, points });
+    const returnPct = points.length ? (points[points.length - 1].cumulativePnl / TOTAL_CAPITAL) * 100 : null;
+    res.json({ month, sharpe, maxDrawdown, returnPct, points });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -533,6 +588,20 @@ apiRouter.get('/baselines/:name', (req, res) => {
     const raw = fs.readFileSync(filePath, 'utf8');
     const data = JSON.parse(raw);
     res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/baselines/:name — delete a saved baseline
+apiRouter.delete('/baselines/:name', (req, res) => {
+  const name = sanitizeBaselineName(req.params.name);
+  if (!name) return res.status(400).json({ error: 'Invalid baseline name' });
+  try {
+    const filePath = path.join(BACKTEST_BASELINES_DIR, `${name}.json`);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Baseline not found' });
+    fs.unlinkSync(filePath);
+    res.status(200).json({ deleted: name });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -627,6 +696,35 @@ apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
     }
     const filePath = path.join(BACKTEST_BASELINES_DIR, `${name}.json`);
     fs.writeFileSync(filePath, JSON.stringify(baseline, null, 2), 'utf8');
+
+    // Keep backtest cache in sync so GET /api/backtest-month and GET /api/trades match this baseline
+    const byMonthResults = new Map();
+    for (const r of allResults) {
+      if (r.error) continue;
+      const monthKey = r.date.slice(0, 7);
+      if (!byMonthResults.has(monthKey)) byMonthResults.set(monthKey, []);
+      byMonthResults.get(monthKey).push({
+        date: r.date,
+        trades: r.trades,
+        wins: r.wins,
+        losses: r.losses,
+        pnl: r.totalPnl,
+        results: r.results,
+      });
+    }
+    for (const [monthKey, dayRows] of byMonthResults) {
+      const byDate = dayRows.map((d) => ({
+        date: d.date,
+        trades: d.trades,
+        wins: d.wins,
+        losses: d.losses,
+        pnl: d.pnl,
+        results: d.results || [],
+      }));
+      const totalPnl = byDate.reduce((s, d) => s + (d.pnl || 0), 0);
+      writeBacktestCache(monthKey, { month: monthKey, byDate, totalPnl });
+    }
+
     res.json({
       name,
       filePath,

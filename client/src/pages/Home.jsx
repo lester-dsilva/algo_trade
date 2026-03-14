@@ -1,14 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import * as api from '../api';
 
 export default function Home() {
-  const navigate = useNavigate();
   const [months, setMonths] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState('');
   const [dataStatus, setDataStatus] = useState(null);
   const [loadStatus, setLoadStatus] = useState(null);
-  const [backtestResult, setBacktestResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadMonthLoading, setLoadMonthLoading] = useState(false);
   const [loadDateStatus, setLoadDateStatus] = useState(null);
@@ -18,6 +16,7 @@ export default function Home() {
   const [baselineLoading, setBaselineLoading] = useState(false);
   const [baselineResult, setBaselineResult] = useState(null);
   const [baselines, setBaselines] = useState([]);
+  const [customMonth, setCustomMonth] = useState('');
 
   useEffect(() => {
     api.getMonths().then((d) => {
@@ -89,19 +88,6 @@ export default function Home() {
     });
   };
 
-  const handleRunBacktest = () => {
-    if (!selectedMonth) return;
-    setLoading(true);
-    setError('');
-    api.backtestMonth(selectedMonth).then((data) => {
-      setBacktestResult(data);
-      setLoading(false);
-    }).catch((e) => {
-      setError(e.message);
-      setLoading(false);
-    });
-  };
-
   const handleRunAllSaveBaseline = () => {
     const name = (baselineName || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline';
     setBaselineLoading(true);
@@ -124,17 +110,14 @@ export default function Home() {
 
       <section className="card">
         <h2>Month</h2>
+        <p className="muted" style={{ marginBottom: '0.5rem' }}>
+          Select any month to view status or load data. You can also type a month below.
+        </p>
         <select
           value={selectedMonth}
           onChange={(e) => {
-            const month = e.target.value;
-            setSelectedMonth(month);
-            setBacktestResult(null);
-            if (month) {
-              api.getBacktestMonth(month).then((cached) => {
-                if (cached) navigate(`/month/${month}`);
-              }).catch(() => {});
-            }
+            setSelectedMonth(e.target.value);
+            if (e.target.value) setError('');
           }}
         >
           <option value="">Select month</option>
@@ -142,6 +125,34 @@ export default function Home() {
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem' }}>
+          <label htmlFor="custom-month" className="muted" style={{ fontSize: '0.9rem' }}>
+            Or specify month:
+          </label>
+          <input
+            id="custom-month"
+            type="month"
+            value={customMonth}
+            onChange={(e) => setCustomMonth(e.target.value)}
+            style={{ padding: '0.35rem 0.5rem' }}
+          />
+          <button
+            type="button"
+            disabled={!customMonth || loadMonthLoading || loadStatus?.running}
+            onClick={() => {
+              if (!customMonth) return;
+              const month = customMonth; // YYYY-MM from input type="month"
+              setSelectedMonth(month);
+              if (!months.includes(month)) {
+                setMonths((prev) => [...prev, month].sort().reverse());
+              }
+              setCustomMonth('');
+              api.getDataStatus(month).then(setDataStatus).catch((e) => setError(e.message));
+            }}
+          >
+            Go
+          </button>
+        </div>
         {dataStatus && (
           <>
             <p className="muted">
@@ -194,12 +205,6 @@ export default function Home() {
         >
           {loadMonthLoading || loadStatus?.running ? 'Loading…' : 'Load data'}
         </button>
-        <button
-          onClick={handleRunBacktest}
-          disabled={!selectedMonth || loading}
-        >
-          {loading ? 'Running…' : 'Run backtest'}
-        </button>
       </section>
 
       {loadStatus?.running && (
@@ -207,16 +212,6 @@ export default function Home() {
       )}
       {loadDateStatus?.running && (
         <p className="muted">Fetching data for {loadDateStatus.date}…</p>
-      )}
-
-      {backtestResult && (
-        <section className="card">
-          <h2>Backtest summary — {backtestResult.month}</h2>
-          <p><strong>Total PnL:</strong> ₹{backtestResult.totalPnl?.toFixed(2)}</p>
-          <button onClick={() => navigate(`/month/${backtestResult.month}`)}>
-            View trades per day & equity curve
-          </button>
-        </section>
       )}
 
       <section className="card">
@@ -248,7 +243,7 @@ export default function Home() {
             <h3 style={{ fontSize: '1rem', marginBottom: '0.35rem' }}>Saved baselines</h3>
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.9rem' }}>
               {baselines.map((b) => (
-                <li key={b.name} style={{ padding: '0.2rem 0' }}>
+                <li key={b.name} style={{ padding: '0.2rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <Link to={`/baseline/${encodeURIComponent(b.name)}`} style={{ fontWeight: 500 }}>
                     {b.name}
                   </Link>
@@ -256,6 +251,19 @@ export default function Home() {
                     {b.savedAt != null && ` — ${new Date(b.savedAt).toLocaleString()}`}
                     {b.totalPnl != null && ` — ₹${b.totalPnl.toFixed(2)} (${b.totalTrades} trades)`}
                   </span>
+                  <button
+                    type="button"
+                    className="danger"
+                    style={{ marginLeft: 'auto', fontSize: '0.8rem', padding: '0.15rem 0.4rem' }}
+                    onClick={() => {
+                      if (!window.confirm(`Delete baseline "${b.name}"?`)) return;
+                      api.deleteBaseline(b.name).then(() => {
+                        api.getBaselines().then((d) => setBaselines(d.baselines || [])).catch(() => {});
+                      }).catch((e) => setError(e.message));
+                    }}
+                  >
+                    Delete
+                  </button>
                 </li>
               ))}
             </ul>

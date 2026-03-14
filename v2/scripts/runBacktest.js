@@ -20,6 +20,8 @@ const ROOT = path.resolve(__dirname, '../..');
 
 // Exit params (match positionStore / analyzePnl)
 const POSITION_VALUE = 50000;
+const TOTAL_CAPITAL = 300000;   // ₹3 lakh — max concurrent capital
+const MAX_TRADES_PER_DAY = Math.floor(TOTAL_CAPITAL / POSITION_VALUE); // 6 trades (50k each)
 const FIRST_TARGET_PCT = 3;
 const TRAIL_PCT = 1.5;
 const EOD_BAR_TIME = '15:24';
@@ -151,11 +153,17 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     });
   }
 
-  const totalPnl = results.reduce((s, r) => s + r.pnl, 0);
-  const wins = results.filter((r) => r.pnl > 0).length;
-  const losses = results.filter((r) => r.pnl <= 0).length;
+  // Capital constraint: only first MAX_TRADES_PER_DAY by time (₹50k each, total ₹3L)
+  const capped = results
+    .slice()
+    .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
+    .slice(0, MAX_TRADES_PER_DAY);
 
-  return { backtestDate, results, totalPnl, trades: results.length, wins, losses };
+  const totalPnl = capped.reduce((s, r) => s + r.pnl, 0);
+  const wins = capped.filter((r) => r.pnl > 0).length;
+  const losses = capped.filter((r) => r.pnl <= 0).length;
+
+  return { backtestDate, results: capped, totalPnl, trades: capped.length, wins, losses };
 }
 
 function main() {

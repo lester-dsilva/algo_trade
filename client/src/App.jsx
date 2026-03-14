@@ -3,6 +3,7 @@ import Home from './pages/Home';
 import MonthView from './pages/MonthView';
 import DayDetail from './pages/DayDetail';
 import BaselineView from './pages/BaselineView';
+import BaselineMonthView from './pages/BaselineMonthView';
 import './App.css';
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
         <Route path="/month/:month" element={<MonthView />} />
         <Route path="/day/:date" element={<DayDetail />} />
         <Route path="/baseline/:name" element={<BaselineView />} />
+        <Route path="/baseline/:name/month/:month" element={<BaselineMonthView />} />
       </Routes>
     </BrowserRouter>
   );

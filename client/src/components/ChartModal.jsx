@@ -20,11 +20,14 @@ function toBusinessDay(dateStr) {
   return { year: y, month: m, day: d };
 }
 
+const ENTRY_LOOP_START_BAR = 20;
+
 export default function ChartModal({ date, symbol, onClose }) {
   const [mode, setMode] = useState('3m');
   const [data, setData] = useState(null);
   const [dailyData, setDailyData] = useState(null);
   const [error, setError] = useState('');
+  const [clickedBarReason, setClickedBarReason] = useState(null);
   const chartRef = useRef(null);
   const chartInstance = useRef(null);
 
@@ -32,6 +35,7 @@ export default function ChartModal({ date, symbol, onClose }) {
     if (!date || !symbol) return;
     setError('');
     setDailyData(null);
+    setClickedBarReason(null);
     api.getChart3m(date, symbol).then(setData).catch((e) => setError(e.message));
   }, [date, symbol]);
 
@@ -68,6 +72,7 @@ export default function ChartModal({ date, symbol, onClose }) {
     });
 
     if (is3m) {
+      setClickedBarReason(null);
       candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0.4 } });
       const chartBars = data.bars.map((b, idx) => ({
         time: parseTime3m(b),
@@ -78,6 +83,29 @@ export default function ChartModal({ date, symbol, onClose }) {
         index: idx,
       }));
       candleSeries.setData(chartBars);
+
+      const failedBarsMap = new Map();
+      (data.failedBars || []).forEach((fb) => {
+        const t = (fb.time || '').slice(0, 5);
+        if (t) failedBarsMap.set(t, fb.reason);
+      });
+
+      chart.subscribeClick((param) => {
+        if (param.time == null || param.seriesData?.size === 0) return;
+        const i = chartBars.findIndex((b) => b.time === param.time);
+        if (i < 0) return;
+        const barTimeStr = (data.bars[i]?.time || '').slice(0, 5);
+        let message;
+        if (i === data.entry?.barIndex) {
+          message = 'Entry bar';
+        } else if (i < ENTRY_LOOP_START_BAR) {
+          message = 'Before entry window (entry considered from 10:18)';
+        } else {
+          const reason = failedBarsMap.get(barTimeStr);
+          message = reason ? `Why no entry: ${reason}` : 'No skip reason for this bar';
+        }
+        setClickedBarReason({ barTime: barTimeStr, message });
+      });
 
       if (data.entry?.price != null) {
         const line = chart.addSeries(LineSeries, { color: '#2196f3', lineWidth: 2 });
@@ -179,14 +207,14 @@ export default function ChartModal({ date, symbol, onClose }) {
             <button
               type="button"
               className={mode === '3m' ? 'active' : ''}
-              onClick={() => setMode('3m')}
+              onClick={() => { setMode('3m'); setClickedBarReason(null); }}
             >
               3m
             </button>
             <button
               type="button"
               className={mode === 'daily' ? 'active' : ''}
-              onClick={() => setMode('daily')}
+              onClick={() => { setMode('daily'); setClickedBarReason(null); }}
             >
               Daily
             </button>
@@ -199,6 +227,11 @@ export default function ChartModal({ date, symbol, onClose }) {
         {mode === '3m' && data && (
           <p className="muted">
             Entry: {data.entry?.price?.toFixed(2)} · Stop: {data.stop?.toFixed(2)} · Exit: {data.exit?.price?.toFixed(2)} ({data.exit?.reason}) · Axis: IST
+          </p>
+        )}
+        {mode === '3m' && clickedBarReason && (
+          <p style={{ marginTop: '0.25rem', marginBottom: 0, padding: '0.35rem 0.5rem', background: '#f5f5f5', borderRadius: 4 }}>
+            Bar {clickedBarReason.barTime} — {clickedBarReason.message}
           </p>
         )}
         {showChart && (

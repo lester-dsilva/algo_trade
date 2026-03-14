@@ -11,7 +11,6 @@ export default function MonthView() {
   const [error, setError] = useState('');
   const [cachedResult, setCachedResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [running, setRunning] = useState(false);
 
   useEffect(() => {
     if (!month) return;
@@ -25,11 +24,8 @@ export default function MonthView() {
       .then((cached) => {
         if (cached) {
           setCachedResult(cached);
-          setLoading(false);
-          return;
         }
-        // No cached data — run backtest immediately
-        handleRunBacktest(month);
+        setLoading(false);
       })
       .catch((e) => {
         setError(e.message);
@@ -48,24 +44,6 @@ export default function MonthView() {
     }
   }
 
-  async function handleRunBacktest(currentMonth = month) {
-    if (!currentMonth) return;
-    try {
-      setRunning(true);
-      setLoading(true);
-      setError('');
-      const result = await api.backtestMonth(currentMonth);
-      setData(result);
-      const eq = await api.getEquityCurve(currentMonth).catch(() => null);
-      setEquity(eq);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setRunning(false);
-      setLoading(false);
-    }
-  }
-
   if (error) return <div className="page"><div className="error">{error}</div></div>;
 
   if (loading && !data && !cachedResult) {
@@ -81,13 +59,21 @@ export default function MonthView() {
       <div className="page">
         <nav className="muted"><Link to="/">Dashboard</Link> / {month}</nav>
         <h1>Month: {month}</h1>
-        <p>Backtest results for this month are already saved.</p>
+        <p>Backtest results for this month are available (from last baseline run).</p>
         <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
-          <button onClick={handleViewCached}>View saved results</button>
-          <button onClick={() => handleRunBacktest()} disabled={running}>
-            {running ? 'Running backtest…' : 'Re-run backtest for this month'}
-          </button>
+          <button onClick={handleViewCached}>View results</button>
         </div>
+      </div>
+    );
+  }
+
+  if (!loading && !cachedResult && !data) {
+    return (
+      <div className="page">
+        <nav className="muted"><Link to="/">Dashboard</Link> / {month}</nav>
+        <h1>Month: {month}</h1>
+        <p className="muted">No backtest data for this month. Run &quot;Run all &amp; save baseline&quot; on the dashboard to generate results.</p>
+        <p><Link to="/">Back to dashboard</Link></p>
       </div>
     );
   }
@@ -109,7 +95,10 @@ export default function MonthView() {
       {equity && (
         <section className="card">
           <h2>Equity curve</h2>
-          <p className="muted">Sharpe: {equity.sharpe != null ? equity.sharpe.toFixed(3) : 'n/a'} · Max drawdown: ₹{equity.maxDrawdown?.toFixed(2)}</p>
+          <p className="muted">
+            Sharpe: {equity.sharpe != null ? equity.sharpe.toFixed(3) : 'n/a'} · Max drawdown: ₹{equity.maxDrawdown?.toFixed(2)}
+            {typeof equity.returnPct === 'number' && ` · Return: ${equity.returnPct.toFixed(2)}%`}
+          </p>
           <EquityCurveChart points={equity.points || []} />
         </section>
       )}

@@ -16,7 +16,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR = path.join(ROOT, 'v2', 'data');
 
-const CAPITAL_PER_DAY = 50000; // scale for daily return (one position)
+const TOTAL_CAPITAL = 300000;     // ₹3 lakh
+const CAPITAL_PER_TRADE = 50000;  // ₹50k per trade
+const CHARGES_PER_TRADE = 30;    // ₹30 per trade
 const TRADING_DAYS_PER_YEAR = 252;
 
 function getDatesWithData(monthFilter) {
@@ -48,7 +50,9 @@ function main() {
   for (const backtestDate of dates) {
     const out = runBacktestForDate(backtestDate, { quiet: true });
     if (!out) continue;
-    rows.push({ date: backtestDate, pnl: out.totalPnl });
+    const trades = out.trades ?? 0;
+    const netPnl = (out.totalPnl ?? 0) - trades * CHARGES_PER_TRADE;
+    rows.push({ date: backtestDate, pnl: out.totalPnl, netPnl, trades });
   }
 
   if (rows.length === 0) {
@@ -56,8 +60,8 @@ function main() {
     process.exit(1);
   }
 
-  // Daily return = PnL / capital (as decimal)
-  const dailyReturns = rows.map((r) => r.pnl / CAPITAL_PER_DAY);
+  // Daily return = (PnL - charges) / capital per trade
+  const dailyReturns = rows.map((r) => r.netPnl / CAPITAL_PER_TRADE);
   const meanReturn = dailyReturns.reduce((a, b) => a + b, 0) / dailyReturns.length;
   const variance =
     dailyReturns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / (dailyReturns.length - 1) || 0;
@@ -67,11 +71,11 @@ function main() {
   const sharpe =
     stdReturn > 0 ? (meanReturn / stdReturn) * Math.sqrt(TRADING_DAYS_PER_YEAR) : null;
 
-  // Equity curve
+  // Equity curve (after charges)
   let cum = 0;
   const equityCurve = rows.map((r) => {
-    cum += r.pnl;
-    return { date: r.date, dailyPnl: r.pnl, cumulativePnl: cum };
+    cum += r.netPnl;
+    return { date: r.date, dailyPnl: r.netPnl, cumulativePnl: cum };
   });
 
   // Max drawdown (from running high of cumulative PnL)
@@ -88,7 +92,9 @@ function main() {
   console.log('\n--- Sharpe & Equity ---\n');
   console.log(`Period: ${rows[0].date} to ${rows[rows.length - 1].date} (${rows.length} trading days)`);
   console.log(`Total PnL: ₹${totalPnl.toFixed(2)}`);
-  console.log(`Mean daily return (on ₹${CAPITAL_PER_DAY.toLocaleString()}): ${(meanReturn * 100).toFixed(4)}%`);
+  const returnPct = TOTAL_CAPITAL > 0 ? (totalPnl / TOTAL_CAPITAL) * 100 : 0;
+  console.log(`Return % (on ₹${TOTAL_CAPITAL.toLocaleString()}): ${returnPct.toFixed(2)}%`);
+  console.log(`Mean daily return (on ₹${CAPITAL_PER_TRADE.toLocaleString()}, after ₹${CHARGES_PER_TRADE}/trade): ${(meanReturn * 100).toFixed(4)}%`);
   console.log(`Std daily return: ${(stdReturn * 100).toFixed(4)}%`);
   console.log(`Sharpe ratio (annualized, risk-free=0): ${sharpe != null ? sharpe.toFixed(3) : 'n/a'}`);
   console.log(`Max drawdown: ₹${maxDrawdown.toFixed(2)}`);

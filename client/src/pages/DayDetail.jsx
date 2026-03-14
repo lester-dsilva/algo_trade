@@ -1,10 +1,28 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useLocation, Link } from 'react-router-dom';
 import * as api from '../api';
 import ChartModal from '../components/ChartModal';
 
+function buildDayDataFromBaselineTrades(date, tradesForDay) {
+  const results = (tradesForDay || []).map((t) => ({
+    symbol: t.symbol,
+    time: t.time,
+    entry: t.entry,
+    stop: t.stop,
+    exitPrice: t.exitPrice,
+    exitReason: t.exitReason,
+    pnl: t.pnl,
+  }));
+  const totalPnl = results.reduce((s, r) => s + (r.pnl ?? 0), 0);
+  const wins = results.filter((r) => (r.pnl ?? 0) >= 0).length;
+  const losses = results.filter((r) => (r.pnl ?? 0) < 0).length;
+  return { date, results, totalPnl, trades: results.length, wins, losses };
+}
+
 export default function DayDetail() {
   const { date } = useParams();
+  const location = useLocation();
+  const fromBaseline = location.state?.fromBaseline;
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [chartFor, setChartFor] = useState(null); // { date, symbol }
@@ -12,8 +30,15 @@ export default function DayDetail() {
   useEffect(() => {
     if (!date) return;
     setError('');
-    api.getTrades(date).then(setData).catch((e) => setError(e.message));
-  }, [date]);
+    if (fromBaseline) {
+      api.getBaseline(fromBaseline).then((baseline) => {
+        const dayTrades = (baseline.trades || []).filter((t) => t.date === date);
+        setData(buildDayDataFromBaselineTrades(date, dayTrades));
+      }).catch((e) => setError(e.message));
+    } else {
+      api.getTrades(date).then(setData).catch((e) => setError(e.message));
+    }
+  }, [date, fromBaseline]);
 
   if (error) return <div className="page"><div className="error">{error}</div></div>;
   if (!data) return <div className="page"><p>Loading…</p></div>;
@@ -23,7 +48,13 @@ export default function DayDetail() {
   return (
     <div className="page">
       <nav className="muted">
-        <Link to="/">Dashboard</Link> / <Link to={`/month/${month}`}>{month}</Link> / {date}
+        <Link to="/">Dashboard</Link>
+        {fromBaseline ? (
+          <> / <Link to={`/baseline/${encodeURIComponent(fromBaseline)}`}>{fromBaseline}</Link></>
+        ) : (
+          <> / <Link to={`/month/${month}`}>{month}</Link></>
+        )}
+        {' '}/ {date}
       </nav>
       <h1>Day: {date}</h1>
       <p><strong>Total PnL:</strong> ₹{data.totalPnl?.toFixed(2)} · Trades: {data.trades} (W: {data.wins} L: {data.losses})</p>

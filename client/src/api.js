@@ -101,6 +101,12 @@ export async function getBaseline(name) {
   return handleRes(r);
 }
 
+/** DELETE a saved baseline by name. */
+export async function deleteBaseline(name) {
+  const r = await fetch(`${API}/baselines/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  return handleRes(r);
+}
+
 /** POST run backtest for all available dates in parallel and save baseline by name. */
 export async function runBacktestAllSaveBaseline(name) {
   const r = await fetch(`${API}/backtest-all-save-baseline`, {

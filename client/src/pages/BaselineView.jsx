@@ -3,7 +3,9 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import * as api from '../api';
 import EquityCurveChart from '../components/EquityCurveChart';
 
-const CAPITAL_PER_DAY = 50000;
+const TOTAL_CAPITAL = 300000;       // ₹3 lakh
+const CAPITAL_PER_TRADE = 50000;   // ₹50k per trade
+const CHARGES_PER_TRADE = 30;     // ₹30 per trade
 const TRADING_DAYS_PER_YEAR = 252;
 
 export default function BaselineView() {
@@ -12,7 +14,7 @@ export default function BaselineView() {
   const [baseline, setBaseline] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [expandedMonth, setExpandedMonth] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!name) return;
@@ -25,9 +27,9 @@ export default function BaselineView() {
       .finally(() => setLoading(false));
   }, [name]);
 
-  const { byDate, equityPoints, sharpe, maxDrawdown } = useMemo(() => {
+  const { equityPoints, sharpe, maxDrawdown, returnPct } = useMemo(() => {
     if (!baseline?.trades?.length) {
-      return { byDate: [], equityPoints: [], sharpe: null, maxDrawdown: 0 };
+      return { equityPoints: [], sharpe: null, maxDrawdown: 0, returnPct: null };
     }
     const trades = baseline.trades;
     const byDateMap = {};
@@ -44,10 +46,11 @@ export default function BaselineView() {
     const byDate = Object.values(byDateMap).sort((a, b) => a.date.localeCompare(b.date));
     let cum = 0;
     const points = byDate.map((row) => {
-      cum += row.pnl;
-      return { date: row.date, pnl: row.pnl, cumulativePnl: cum };
+      const netPnl = row.pnl - (row.trades || 0) * CHARGES_PER_TRADE;
+      cum += netPnl;
+      return { date: row.date, pnl: netPnl, cumulativePnl: cum };
     });
-    const dailyReturns = points.map((p) => p.pnl / CAPITAL_PER_DAY);
+    const dailyReturns = points.map((p) => p.pnl / CAPITAL_PER_TRADE);
     const n = dailyReturns.length;
     const meanReturn = n ? dailyReturns.reduce((a, b) => a + b, 0) / n : 0;
     const variance = n > 1 ? dailyReturns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / (n - 1) : 0;
@@ -60,7 +63,10 @@ export default function BaselineView() {
       const dd = peak - p.cumulativePnl;
       if (dd > maxDrawdown) maxDrawdown = dd;
     }
-    return { byDate, equityPoints: points, sharpe, maxDrawdown };
+    const returnPct = points.length && TOTAL_CAPITAL > 0
+      ? (points[points.length - 1].cumulativePnl / TOTAL_CAPITAL) * 100
+      : null;
+    return { equityPoints: points, sharpe, maxDrawdown, returnPct };
   }, [baseline]);
 
   if (loading) return <div className="page"><p>Loading baseline…</p></div>;
@@ -68,11 +74,6 @@ export default function BaselineView() {
   if (!baseline) return null;
 
   const byMonth = baseline.byMonth || [];
-  const trades = baseline.trades || [];
-
-  function tradesForMonth(month) {
-    return trades.filter((t) => (t.date || '').slice(0, 7) === month);
-  }
 
   return (
     <div className="page">
@@ -81,54 +82,45 @@ export default function BaselineView() {
       {baseline.savedAt && (
         <p className="muted">Saved at {new Date(baseline.savedAt).toLocaleString()}</p>
       )}
-      <p><strong>Total PnL:</strong> ₹{baseline.totalPnl?.toFixed(2)} · <strong>Trades:</strong> {baseline.totalTrades}</p>
+      <p>
+        <strong>Total PnL:</strong> ₹{baseline.totalPnl?.toFixed(2)} · <strong>Trades:</strong> {baseline.totalTrades}
+        {typeof returnPct === 'number' && (
+          <> · <strong>Return:</strong> {returnPct.toFixed(2)}%</>
+        )}
+      </p>
+      <p>
+        <button
+          type="button"
+          className="danger"
+          disabled={deleting}
+          onClick={() => {
+            if (!window.confirm(`Delete baseline "${baseline.name || name}"? This cannot be undone.`)) return;
+            setDeleting(true);
+            api.deleteBaseline(name).then(() => {
+              navigate('/');
+            }).catch((e) => {
+              setError(e.message);
+              setDeleting(false);
+            });
+          }}
+        >
+          {deleting ? 'Deleting…' : 'Delete baseline'}
+        </button>
+      </p>
 
       {equityPoints.length > 0 && (
         <section className="card">
           <h2>Equity curve</h2>
           <p className="muted">
             Sharpe: {sharpe != null ? sharpe.toFixed(3) : 'n/a'} · Max drawdown: ₹{maxDrawdown?.toFixed(2)}
+            {typeof returnPct === 'number' && ` · Return: ${returnPct.toFixed(2)}%`}
           </p>
           <EquityCurveChart points={equityPoints} />
         </section>
       )}
 
       <section className="card">
-        <h2>Trades per day</h2>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Trades</th>
-              <th>Wins</th>
-              <th>Losses</th>
-              <th>PnL</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {byDate.map((row) => (
-              <tr key={row.date}>
-                <td>{row.date}</td>
-                <td>{row.trades}</td>
-                <td>{row.wins}</td>
-                <td>{row.losses}</td>
-                <td className={row.pnl >= 0 ? 'positive' : 'negative'}>
-                  ₹{row.pnl?.toFixed(2)}
-                </td>
-                <td>
-                  <button type="button" onClick={() => navigate(`/day/${row.date}`)}>
-                    View day
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="card">
-        <h2>By month</h2>
+        <h2>Trades by month</h2>
         <table className="table">
           <thead>
             <tr>
@@ -142,69 +134,28 @@ export default function BaselineView() {
             </tr>
           </thead>
           <tbody>
-            {byMonth.map((row) => {
-              const month = row.month;
-              const monthTrades = tradesForMonth(month);
-              const isExpanded = expandedMonth === month;
-              return (
-                <tr key={month}>
-                  <td>{month}</td>
-                  <td>{row.dates}</td>
-                  <td>{row.trades}</td>
-                  <td>{row.wins}</td>
-                  <td>{row.losses}</td>
-                  <td className={(row.pnl || 0) >= 0 ? 'positive' : 'negative'}>
-                    ₹{(row.pnl || 0).toFixed(2)}
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      onClick={() => setExpandedMonth(isExpanded ? null : month)}
-                    >
-                      {isExpanded ? 'Hide trades' : 'View trades'}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
+            {byMonth.map((row) => (
+              <tr key={row.month}>
+                <td>{row.month}</td>
+                <td>{row.dates}</td>
+                <td>{row.trades}</td>
+                <td>{row.wins}</td>
+                <td>{row.losses}</td>
+                <td className={(row.pnl || 0) >= 0 ? 'positive' : 'negative'}>
+                  ₹{(row.pnl || 0).toFixed(2)}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/baseline/${encodeURIComponent(name)}/month/${row.month}`)}
+                  >
+                    View month
+                  </button>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
-
-        {expandedMonth && (
-          <div style={{ marginTop: '1rem', overflowX: 'auto' }}>
-            <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>Trades for {expandedMonth}</h3>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Symbol</th>
-                  <th>Time</th>
-                  <th>Entry</th>
-                  <th>Stop</th>
-                  <th>Exit</th>
-                  <th>Reason</th>
-                  <th>PnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tradesForMonth(expandedMonth).map((t, i) => (
-                  <tr key={`${t.date}-${t.symbol}-${i}`}>
-                    <td>{t.date}</td>
-                    <td>{t.symbol}</td>
-                    <td>{(t.time || '').slice(0, 5)}</td>
-                    <td>{t.entry?.toFixed(2)}</td>
-                    <td>{t.stop?.toFixed(2)}</td>
-                    <td>{t.exitPrice?.toFixed(2)}</td>
-                    <td>{t.exitReason || '—'}</td>
-                    <td className={(t.pnl || 0) >= 0 ? 'positive' : 'negative'}>
-                      ₹{(t.pnl || 0).toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </section>
     </div>
   );
