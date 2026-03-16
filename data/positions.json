@@ -1,0 +1,21 @@
+[
+  {
+    "id": 1,
+    "symbol": "MRPL",
+    "side": "long",
+    "entryTime": "2026-03-16 11:27:00",
+    "entryPrice": 193.11,
+    "stop": 190.21,
+    "target": 198.9,
+    "status": "closed",
+    "signalType": "v2_breakout",
+    "qty": 258,
+    "initialStop": 190.21,
+    "highWaterMark": 200.28,
+    "firstTargetHit": true,
+    "exitTime": "2026-03-16 12:39:00",
+    "exitPrice": 197.28,
+    "pnl": 1075.86,
+    "exitReason": "trail_stop"
+  }
+]

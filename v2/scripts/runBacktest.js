@@ -91,9 +91,10 @@ function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
 
 /**
  * Run backtest for one date. Returns { backtestDate, results, totalPnl, trades, wins, losses } or null if no data.
+ * opts may include firstTargetPct, trailPct (exit) and entry overrides (dayVolMult, gapUpMaxPct, etc.) passed to findEntry.
  */
 export function runBacktestForDate(backtestDate, opts = {}) {
-  const { quiet = false, firstTargetPct, trailPct } = opts;
+  const { quiet = false, firstTargetPct, trailPct, ...entryOpts } = opts;
   const simOpts = {};
   if (firstTargetPct != null) simOpts.firstTargetPct = firstTargetPct;
   if (trailPct != null) simOpts.trailPct = trailPct;
@@ -119,7 +120,7 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     const prev = prevDayOhlc.get(symbol);
     if (!prev || prev.close <= 0) continue;
 
-    const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume });
+    const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume }, entryOpts);
     if (!entryResult) continue;
 
     signals.push({

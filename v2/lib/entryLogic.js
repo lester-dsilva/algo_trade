@@ -31,14 +31,45 @@ const MAX_DAY_MOVE_PCT = 14;          // skip entries if day move from open > 14
 const BREAKOUT_STRENGTH_MIN_PCT = 0.4; // close must be at least 0.4% above recent high
 
 /**
+ * Default config keys that can be overridden via opts (e.g. when creating a baseline).
+ */
+export const ENTRY_DEFAULTS = {
+  gapUpMaxPct: GAP_UP_MAX_PCT,
+  moveUpMinPct: MOVE_UP_MIN_PCT,
+  pullbackPct: PULLBACK_PCT,
+  pullbackMaxFromTopPct: PULLBACK_MAX_FROM_TOP_PCT,
+  wickMaxPct: WICK_MAX_PCT,
+  consolidationRangePct: CONSOLIDATION_RANGE_PCT,
+  maxEntryTime: MAX_ENTRY_TIME,
+  fixedSlPct: FIXED_SL_PCT,
+  maxDayMovePct: MAX_DAY_MOVE_PCT,
+  breakoutStrengthMinPct: BREAKOUT_STRENGTH_MIN_PCT,
+  dayVolMult: DAY_VOL_MULT,
+  breakoutVolMult: BREAKOUT_VOL_MULT,
+};
+
+/**
  * @param {Array<{ open, high, low, close, volume, time, date }>} bars - 3m bars for the day (sorted by time)
  * @param {{ close, volume }} prevDay - previous day close and volume
- * @param {{ debug?: boolean }} [opts] - if debug true, result includes failedBars: [{ time, reason }] for bars skipped before first valid entry
+ * @param {{ debug?: boolean, ...ENTRY_DEFAULTS }} [opts] - debug and optional overrides for entry params
  * @returns {{ entry, stop, time, barIndex, date?, failedBars? } | null} - first valid entry or null
  */
 export function findEntry(bars, prevDay, opts = {}) {
   const debug = !!opts.debug;
   const failedBars = debug ? [] : null;
+
+  const gapUpMaxPct = opts.gapUpMaxPct ?? GAP_UP_MAX_PCT;
+  const moveUpMinPct = opts.moveUpMinPct ?? MOVE_UP_MIN_PCT;
+  const pullbackPct = opts.pullbackPct ?? PULLBACK_PCT;
+  const pullbackMaxFromTopPct = opts.pullbackMaxFromTopPct ?? PULLBACK_MAX_FROM_TOP_PCT;
+  const wickMaxPct = opts.wickMaxPct ?? WICK_MAX_PCT;
+  const consolidationRangePct = opts.consolidationRangePct ?? CONSOLIDATION_RANGE_PCT;
+  const maxEntryTime = opts.maxEntryTime ?? MAX_ENTRY_TIME;
+  const fixedSlPct = opts.fixedSlPct ?? FIXED_SL_PCT;
+  const maxDayMovePct = opts.maxDayMovePct ?? MAX_DAY_MOVE_PCT;
+  const breakoutStrengthMinPct = opts.breakoutStrengthMinPct ?? BREAKOUT_STRENGTH_MIN_PCT;
+  const dayVolMult = opts.dayVolMult ?? DAY_VOL_MULT;
+  const breakoutVolMult = opts.breakoutVolMult ?? BREAKOUT_VOL_MULT;
 
   function skip(reason) {
     if (debug && bar) failedBars.push({ time: (bar.time || '').slice(0, 5), reason });
@@ -49,29 +80,26 @@ export function findEntry(bars, prevDay, opts = {}) {
   const prevClose = prevDay.close;
   const prevVol = prevDay.volume || 0;
 
-  // Gap: day open must not be more than 2% above prev close
   const gapPct = prevClose > 0 ? ((dayOpen - prevClose) / prevClose) * 100 : 0;
-  if (gapPct > GAP_UP_MAX_PCT) return null;
+  if (gapPct > gapUpMaxPct) return null;
 
   const first45 = bars.slice(0, FIRST_45_BARS);
   const high45 = Math.max(...first45.map((b) => b.high));
   const movePct = dayOpen > 0 ? ((high45 - dayOpen) / dayOpen) * 100 : 0;
-  if (movePct < MOVE_UP_MIN_PCT) return null;
+  if (movePct < moveUpMinPct) return null;
 
   let bar;
   for (let i = FIRST_45_BARS; i < bars.length; i++) {
     bar = bars[i];
     const barTime = (bar.time || '').slice(0, 5);
-    if (barTime > MAX_ENTRY_TIME) { skip('after 12:30'); continue; }
+    if (barTime > maxEntryTime) { skip(`after ${maxEntryTime}`); continue; }
 
-    // Skip if stock is already up more than MAX_DAY_MOVE_PCT% from day open at this bar (too extended)
     const dayMovePct = dayOpen > 0 ? ((bar.close - dayOpen) / dayOpen) * 100 : 0;
-    if (dayMovePct > MAX_DAY_MOVE_PCT) { skip(`day move ${dayMovePct.toFixed(1)}% > ${MAX_DAY_MOVE_PCT}%`); continue; }
+    if (dayMovePct > maxDayMovePct) { skip(`day move ${dayMovePct.toFixed(1)}% > ${maxDayMovePct}%`); continue; }
 
     const cumVol = bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-    if (prevVol > 0 && cumVol < DAY_VOL_MULT * prevVol) { skip(`day vol ${(cumVol / prevVol).toFixed(1)}x < ${DAY_VOL_MULT}x`); continue; }
+    if (prevVol > 0 && cumVol < dayVolMult * prevVol) { skip(`day vol ${(cumVol / prevVol).toFixed(1)}x < ${dayVolMult}x`); continue; }
 
-    // Day's high so far (up to and including this bar) and the first bar where it was made
     const dayHighSoFar = Math.max(...bars.slice(0, i + 1).map((b) => b.high));
     let highBarIdx = i;
     for (let k = 0; k <= i; k++) {
@@ -80,56 +108,49 @@ export function findEntry(bars, prevDay, opts = {}) {
         break;
       }
     }
-    // Pullback = lowest low after the day-high bar and before entry bar. Skip if that pullback > 4%
     let pullbackLow = dayHighSoFar;
     if (highBarIdx < i - 1) {
       for (let j = highBarIdx + 1; j < i; j++) {
         if (bars[j].low < pullbackLow) pullbackLow = bars[j].low;
       }
       const pullbackPct = dayHighSoFar > 0 ? ((dayHighSoFar - pullbackLow) / dayHighSoFar) * 100 : 0;
-      if (pullbackPct > PULLBACK_MAX_FROM_TOP_PCT) { skip(`pullback from high ${pullbackPct.toFixed(1)}% > 4%`); continue; }
+      if (pullbackPct > pullbackMaxFromTopPct) { skip(`pullback from high ${pullbackPct.toFixed(1)}% > ${pullbackMaxFromTopPct}%`); continue; }
     }
-    // Pullback: at some point between FIRST_45_BARS and i, low was at least PULLBACK_PCT below high45
     let hasPullback = false;
     for (let j = FIRST_45_BARS; j < i; j++) {
-      if (bars[j].low <= high45 * (1 - PULLBACK_PCT / 100)) {
+      if (bars[j].low <= high45 * (1 - pullbackPct / 100)) {
         hasPullback = true;
         break;
       }
     }
 
-    // Consolidation: range of last 5 bars before current < CONSOLIDATION_RANGE_PCT of price
     const recent5 = bars.slice(i - VOL_AVG_LOOKBACK, i);
     const recentHigh = Math.max(...recent5.map((b) => b.high));
     const recentLow = Math.min(...recent5.map((b) => b.low));
     const rangePct = recent5[0]?.open > 0 ? ((recentHigh - recentLow) / recent5[0].open) * 100 : 100;
-    const hasConsolidation = rangePct <= CONSOLIDATION_RANGE_PCT;
+    const hasConsolidation = rangePct <= consolidationRangePct;
     if (!hasPullback && !hasConsolidation) { skip('no pullback and no consolidation'); continue; }
 
-    // Breakout: close meaningfully above recent high (stronger breakout) and bullish candle
     const breakoutAbovePct = recentHigh > 0 ? ((bar.close - recentHigh) / recentHigh) * 100 : 0;
-    if (breakoutAbovePct < BREAKOUT_STRENGTH_MIN_PCT) { skip(`breakout strength ${breakoutAbovePct.toFixed(2)}% < 0.4%`); continue; }
+    if (breakoutAbovePct < breakoutStrengthMinPct) { skip(`breakout strength ${breakoutAbovePct.toFixed(2)}% < ${breakoutStrengthMinPct}%`); continue; }
     if (bar.close <= bar.open) { skip('bearish candle'); continue; }
 
-    // Entry only if breakout candle closes above day's high (so far before this bar)
     const dayHighBeforeBar = i > 0 ? Math.max(...bars.slice(0, i).map((b) => b.high)) : bar.high;
     if (bar.close <= dayHighBeforeBar) { skip(`close ${bar.close} not above day high ${dayHighBeforeBar}`); continue; }
 
-    // No large wicks
     const range = bar.high - bar.low;
     if (range <= 0) { skip('zero range'); continue; }
     const bodyTop = Math.max(bar.open, bar.close);
     const bodyBottom = Math.min(bar.open, bar.close);
     const upperWick = bar.high - bodyTop;
     const lowerWick = bodyBottom - bar.low;
-    if (upperWick / range > WICK_MAX_PCT || lowerWick / range > WICK_MAX_PCT) { skip('large wick'); continue; }
+    if (upperWick / range > wickMaxPct || lowerWick / range > wickMaxPct) { skip('large wick'); continue; }
 
-    // Breakout candle volume >= 2x avg of previous 5
     const avgVol5 = recent5.reduce((s, b) => s + (b.volume || 0), 0) / VOL_AVG_LOOKBACK;
-    if (avgVol5 > 0 && (bar.volume || 0) < BREAKOUT_VOL_MULT * avgVol5) { skip(`vol ${((bar.volume || 0) / avgVol5).toFixed(1)}x < ${BREAKOUT_VOL_MULT}x`); continue; }
+    if (avgVol5 > 0 && (bar.volume || 0) < breakoutVolMult * avgVol5) { skip(`vol ${((bar.volume || 0) / avgVol5).toFixed(1)}x < ${breakoutVolMult}x`); continue; }
 
     const entry = bar.close;
-    const stop = Math.round(entry * (1 - FIXED_SL_PCT / 100) * 100) / 100;
+    const stop = Math.round(entry * (1 - fixedSlPct / 100) * 100) / 100;
 
     const result = {
       entry,

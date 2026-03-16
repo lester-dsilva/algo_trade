@@ -21,6 +21,10 @@ function toBusinessDay(dateStr) {
 }
 
 const ENTRY_LOOP_START_BAR = 20;
+// Match v2/entryLogic.js for volume condition text
+const DAY_VOL_MULT = 2.7;
+const BREAKOUT_VOL_MULT = 1.1;
+const VOL_AVG_LOOKBACK = 5;
 
 export default function ChartModal({ date, symbol, onClose }) {
   const [mode, setMode] = useState('3m');
@@ -95,6 +99,7 @@ export default function ChartModal({ date, symbol, onClose }) {
         const i = chartBars.findIndex((b) => b.time === param.time);
         if (i < 0) return;
         const barTimeStr = (data.bars[i]?.time || '').slice(0, 5);
+        const bar = data.bars[i];
         let message;
         if (i === data.entry?.barIndex) {
           message = 'Entry bar';
@@ -104,7 +109,31 @@ export default function ChartModal({ date, symbol, onClose }) {
           const reason = failedBarsMap.get(barTimeStr);
           message = reason ? `Why no entry: ${reason}` : 'No skip reason for this bar';
         }
-        setClickedBarReason({ barTime: barTimeStr, message });
+        // Volume conditions (match entryLogic: day vol >= 2.7x prev, bar vol >= 1.1x avg(prev 5))
+        let volumeConditions = null;
+        const prevVol = data.prevDay?.volume ?? 0;
+        if (prevVol >= 0 && bar?.volume != null) {
+          const cumVol = data.bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
+          const dayVolRequired = DAY_VOL_MULT * prevVol;
+          const dayVolMet = prevVol > 0 ? cumVol >= dayVolRequired : true;
+          volumeConditions = {
+            dayVol: cumVol,
+            dayVolRequired,
+            prevVol,
+            dayVolMet,
+          };
+          if (i >= VOL_AVG_LOOKBACK) {
+            const recent5 = data.bars.slice(i - VOL_AVG_LOOKBACK, i);
+            const avg5 = recent5.reduce((s, b) => s + (b.volume || 0), 0) / VOL_AVG_LOOKBACK;
+            const barVolRequired = BREAKOUT_VOL_MULT * avg5;
+            const barVolMet = avg5 > 0 ? (bar.volume || 0) >= barVolRequired : true;
+            volumeConditions.barVol = bar.volume || 0;
+            volumeConditions.avg5 = avg5;
+            volumeConditions.barVolRequired = barVolRequired;
+            volumeConditions.barVolMet = barVolMet;
+          }
+        }
+        setClickedBarReason({ barTime: barTimeStr, message, volumeConditions });
       });
 
       if (data.entry?.price != null) {
@@ -230,9 +259,18 @@ export default function ChartModal({ date, symbol, onClose }) {
           </p>
         )}
         {mode === '3m' && clickedBarReason && (
-          <p style={{ marginTop: '0.25rem', marginBottom: 0, padding: '0.35rem 0.5rem', background: '#f5f5f5', borderRadius: 4 }}>
-            Bar {clickedBarReason.barTime} — {clickedBarReason.message}
-          </p>
+          <div style={{ marginTop: '0.25rem', marginBottom: 0, padding: '0.35rem 0.5rem', background: '#f5f5f5', borderRadius: 4 }}>
+            <p style={{ margin: 0 }}>Bar {clickedBarReason.barTime} — {clickedBarReason.message}</p>
+            {clickedBarReason.volumeConditions && (
+              <p style={{ margin: '0.5rem 0 0', fontSize: '0.9rem' }}>
+                <strong>Volume conditions:</strong>{' '}
+                Day vol: {clickedBarReason.volumeConditions.dayVol?.toLocaleString()} / {clickedBarReason.volumeConditions.dayVolRequired?.toLocaleString()} (≥{DAY_VOL_MULT}× prev {clickedBarReason.volumeConditions.prevVol?.toLocaleString()}) — {clickedBarReason.volumeConditions.dayVolMet ? 'Met' : 'Not met'}
+                {clickedBarReason.volumeConditions.barVol != null && (
+                  <> · Bar vol: {clickedBarReason.volumeConditions.barVol?.toLocaleString()} / {clickedBarReason.volumeConditions.barVolRequired?.toFixed(0)} (≥{BREAKOUT_VOL_MULT}× avg 5) — {clickedBarReason.volumeConditions.barVolMet ? 'Met' : 'Not met'}</>
+                )}
+              </p>
+            )}
+          </div>
         )}
         {showChart && (
           <div ref={chartRef} style={{ width: '100%', minHeight: 420 }} />

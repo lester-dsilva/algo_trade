@@ -2,6 +2,24 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import * as api from '../api';
 
+// Default baseline config (match v2/entryLogic.js and v2/scripts/runBacktest.js)
+const BASELINE_CONFIG_DEFAULTS = {
+  dayVolMult: 2.7,
+  breakoutVolMult: 1.1,
+  gapUpMaxPct: 3,
+  moveUpMinPct: 4,
+  pullbackPct: 1,
+  pullbackMaxFromTopPct: 4,
+  wickMaxPct: 0.35,
+  consolidationRangePct: 2,
+  maxEntryTime: '12:30',
+  fixedSlPct: 1.5,
+  maxDayMovePct: 14,
+  breakoutStrengthMinPct: 0.4,
+  firstTargetPct: 3,
+  trailPct: 1.5,
+};
+
 export default function Home() {
   const [months, setMonths] = useState([]);
   const [selectedMonth, setSelectedMonth] = useState('');
@@ -17,6 +35,8 @@ export default function Home() {
   const [baselineResult, setBaselineResult] = useState(null);
   const [baselines, setBaselines] = useState([]);
   const [customMonth, setCustomMonth] = useState('');
+  const [showBaselineConfigModal, setShowBaselineConfigModal] = useState(false);
+  const [baselineConfig, setBaselineConfig] = useState(() => ({ ...BASELINE_CONFIG_DEFAULTS }));
 
   useEffect(() => {
     api.getMonths().then((d) => {
@@ -88,12 +108,19 @@ export default function Home() {
     });
   };
 
-  const handleRunAllSaveBaseline = () => {
-    const name = (baselineName || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline';
+  const openBaselineConfigModal = () => {
+    setBaselineConfig({ ...BASELINE_CONFIG_DEFAULTS });
+    setShowBaselineConfigModal(true);
+  };
+
+  const handleRunAllSaveBaseline = (nameOverride, configOverride) => {
+    const name = ((nameOverride ?? baselineName) || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline';
+    const config = configOverride ?? baselineConfig;
+    setShowBaselineConfigModal(false);
     setBaselineLoading(true);
     setError('');
     setBaselineResult(null);
-    api.runBacktestAllSaveBaseline(name).then((data) => {
+    api.runBacktestAllSaveBaseline(name, config).then((data) => {
       setBaselineResult(data);
       setBaselineLoading(false);
       api.getBaselines().then((d) => setBaselines(d.baselines || [])).catch(() => {});
@@ -101,6 +128,10 @@ export default function Home() {
       setError(e.message);
       setBaselineLoading(false);
     });
+  };
+
+  const setConfigValue = (key, value) => {
+    setBaselineConfig((prev) => ({ ...prev, [key]: value }));
   };
 
   return (
@@ -227,12 +258,39 @@ export default function Home() {
           />
           <button
             type="button"
-            onClick={handleRunAllSaveBaseline}
+            onClick={openBaselineConfigModal}
             disabled={baselineLoading || months.length === 0}
           >
             {baselineLoading ? 'Running backtest…' : 'Run all & save baseline'}
           </button>
         </div>
+        {showBaselineConfigModal && (
+          <div className="modal-overlay" onClick={() => setShowBaselineConfigModal(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
+              <h3 style={{ marginTop: 0 }}>Baseline config</h3>
+              <p className="muted" style={{ marginBottom: '1rem' }}>Override values (optional). Saved baseline will use these.</p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem', marginBottom: '1rem' }}>
+                <label style={{ gridColumn: '1 / -1', fontWeight: 600 }}>Entry — volume</label>
+                <label><span className="muted">Day vol ≥ </span><input type="number" step="0.1" min="0" value={baselineConfig.dayVolMult} onChange={(e) => setConfigValue('dayVolMult', parseFloat(e.target.value) || 0)} style={{ width: 56, marginLeft: 4 }} />× prev</label>
+                <label><span className="muted">Bar vol ≥ </span><input type="number" step="0.1" min="0" value={baselineConfig.breakoutVolMult} onChange={(e) => setConfigValue('breakoutVolMult', parseFloat(e.target.value) || 0)} style={{ width: 56, marginLeft: 4 }} />× avg 5</label>
+                <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Entry — other</label>
+                <label><span className="muted">Gap up max %</span><input type="number" step="0.5" value={baselineConfig.gapUpMaxPct} onChange={(e) => setConfigValue('gapUpMaxPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label><span className="muted">Move up min %</span><input type="number" step="0.5" value={baselineConfig.moveUpMinPct} onChange={(e) => setConfigValue('moveUpMinPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label><span className="muted">Pullback %</span><input type="number" step="0.1" value={baselineConfig.pullbackPct} onChange={(e) => setConfigValue('pullbackPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label><span className="muted">Pullback max from top %</span><input type="number" step="0.5" value={baselineConfig.pullbackMaxFromTopPct} onChange={(e) => setConfigValue('pullbackMaxFromTopPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label><span className="muted">Max entry time</span><input type="text" value={baselineConfig.maxEntryTime} onChange={(e) => setConfigValue('maxEntryTime', e.target.value)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label><span className="muted">Fixed SL %</span><input type="number" step="0.1" value={baselineConfig.fixedSlPct} onChange={(e) => setConfigValue('fixedSlPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Exit</label>
+                <label><span className="muted">First target %</span><input type="number" step="0.5" value={baselineConfig.firstTargetPct} onChange={(e) => setConfigValue('firstTargetPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label><span className="muted">Trail %</span><input type="number" step="0.1" value={baselineConfig.trailPct} onChange={(e) => setConfigValue('trailPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                <button type="button" onClick={() => setShowBaselineConfigModal(false)}>Cancel</button>
+                <button type="button" onClick={() => handleRunAllSaveBaseline((baselineName || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline', baselineConfig)}>Run & save baseline</button>
+              </div>
+            </div>
+          </div>
+        )}
         {baselineResult && (
           <div style={{ marginTop: '0.75rem', padding: '0.5rem', background: '#f0f8f0', borderRadius: 4 }}>
             <strong>Saved:</strong> {baselineResult.name} — ₹{baselineResult.totalPnl?.toFixed(2)} ({baselineResult.totalTrades} trades, {baselineResult.datesRun} dates)

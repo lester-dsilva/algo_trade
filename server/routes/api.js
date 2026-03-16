@@ -162,7 +162,7 @@ function sanitizeBaselineName(name) {
   return name.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'baseline';
 }
 
-function runBacktestAllParallel(dates) {
+function runBacktestAllParallel(dates, config = {}) {
   if (dates.length === 0) return Promise.resolve([]);
   const concurrency = Math.min(Math.max(1, os.cpus().length), dates.length);
   const chunkSize = Math.ceil(dates.length / concurrency);
@@ -173,7 +173,7 @@ function runBacktestAllParallel(dates) {
   const workerPromises = chunks.map((chunk) => {
     return new Promise((resolve, reject) => {
       const worker = new Worker(BACKTEST_WORKER_PATH, {
-        workerData: { dates: chunk },
+        workerData: { dates: chunk, config },
         resourceLimits: { stackSizeMb: 8 },
       });
       worker.on('message', (msg) => {
@@ -497,7 +497,8 @@ apiRouter.get('/chart/3m', (req, res) => {
     const exit = trade
       ? { price: trade.exitPrice, reason: trade.exitReason, barIndex: trade.exitBarIndex }
       : null;
-    res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit, failedBars });
+    const prevDay = prev ? { volume: prev.volume || 0 } : null;
+    res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit, failedBars, prevDay });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -637,17 +638,19 @@ apiRouter.get('/baselines', (req, res) => {
 });
 
 // POST /api/backtest-all-save-baseline — run backtest for all dates in parallel, save baseline by name
+// Body: { name: string, config?: object } — config overrides for entry/exit (dayVolMult, firstTargetPct, trailPct, etc.)
 apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
   const name = sanitizeBaselineName(req.body?.name);
   if (!name) {
     return res.status(400).json({ error: 'Body { name: "baseline_name" } required (alphanumeric + underscore)' });
   }
+  const config = req.body?.config && typeof req.body.config === 'object' ? req.body.config : {};
   try {
     const dates = getDatesWithData(null);
     if (dates.length === 0) {
       return res.status(404).json({ error: 'No backtest data in v2/data. Load data first.' });
     }
-    const allResults = await runBacktestAllParallel(dates);
+    const allResults = await runBacktestAllParallel(dates, config);
     const byMonth = new Map();
     const allTrades = [];
     for (const r of allResults) {
@@ -686,6 +689,7 @@ apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
     const baseline = {
       savedAt: new Date().toISOString(),
       name,
+      config: Object.keys(config).length ? config : undefined,
       totalPnl,
       totalTrades,
       byMonth: byMonthArray,
