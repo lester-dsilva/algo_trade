@@ -17,6 +17,7 @@ import {
 } from '../../v2/lib/loadBacktestData.js';
 import { runBacktestForDate } from '../../v2/scripts/runBacktest.js';
 import { findEntry } from '../../v2/lib/entryLogic.js';
+import { sumChargesForTrades } from '../../lib/zerodhaCharges.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -81,7 +82,7 @@ function writeBacktestCache(month, data) {
 }
 const TOTAL_CAPITAL = 300000;       // ₹3 lakh
 const CAPITAL_PER_TRADE = 50000;   // ₹50k deployed per trade
-const CHARGES_PER_TRADE = 30;      // ₹30 per trade
+const FALLBACK_CHARGES_PER_TRADE = 55;  // when trade-level data missing
 
 // In-memory load-month job status
 let loadMonthStatus = { running: false, month: null, startedAt: null };
@@ -515,7 +516,10 @@ apiRouter.get('/equity-curve', (req, res) => {
     if (cached?.byDate?.length) {
       const rows = cached.byDate.map((d) => {
         const trades = d.trades ?? 0;
-        const netPnl = (d.pnl ?? 0) - trades * CHARGES_PER_TRADE;
+        const charges = d.results?.length
+          ? sumChargesForTrades(d.results)
+          : trades * FALLBACK_CHARGES_PER_TRADE;
+        const netPnl = (d.pnl ?? 0) - charges;
         return { date: d.date, pnl: d.pnl, netPnl, trades };
       });
       const dailyReturns = rows.map((r) => r.netPnl / CAPITAL_PER_TRADE);
@@ -548,7 +552,10 @@ apiRouter.get('/equity-curve', (req, res) => {
       const out = runBacktestForDate(backtestDate, { quiet: true });
       if (!out) continue;
       const trades = out.trades ?? 0;
-      const netPnl = (out.totalPnl ?? 0) - trades * CHARGES_PER_TRADE;
+      const charges = out.results?.length
+        ? sumChargesForTrades(out.results)
+        : trades * FALLBACK_CHARGES_PER_TRADE;
+      const netPnl = (out.totalPnl ?? 0) - charges;
       rows.push({ date: backtestDate, pnl: out.totalPnl, netPnl, trades: out.trades });
     }
     if (rows.length === 0) {

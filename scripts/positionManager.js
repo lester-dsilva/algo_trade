@@ -164,7 +164,19 @@ async function checkPositions(kite, instruments) {
       changed = true;
       const msg = `${pos.symbol} ${result.exit} @ ${result.exitPrice} – PnL ${positions[idx].pnl}`;
       console.error('[POSITION]', msg);
-      sendAlert(msg);
+      const buyVal = Math.round(pos.entryPrice * pos.qty * 100) / 100;
+      const sellVal = Math.round(result.exitPrice * pos.qty * 100) / 100;
+      const pnlStr = (p) => (p >= 0 ? `+₹${p.toFixed(2)}` : `-₹${Math.abs(p).toFixed(2)}`);
+      sendAlert([
+        'EXIT',
+        `Symbol: ${pos.symbol}`,
+        `ID: #${pos.id}`,
+        `Reason: ${result.exit}`,
+        `Exit: ₹${result.exitPrice}`,
+        `Buy Value: ₹${buyVal.toLocaleString('en-IN')}`,
+        `Sell Value: ₹${sellVal.toLocaleString('en-IN')}`,
+        `P&L: ${pnlStr(positions[idx].pnl)}`,
+      ].join('\n'));
     } else {
       if (positions[idx].firstTargetHit !== pos.firstTargetHit || positions[idx].highWaterMark !== pos.highWaterMark) {
         changed = true;

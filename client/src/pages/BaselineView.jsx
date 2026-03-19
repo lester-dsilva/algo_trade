@@ -2,11 +2,12 @@ import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import * as api from '../api';
 import EquityCurveChart from '../components/EquityCurveChart';
+import { sumChargesForTrades } from '../lib/zerodhaCharges';
 
 const TOTAL_CAPITAL = 300000;       // ₹3 lakh
 const CAPITAL_PER_TRADE = 50000;   // ₹50k per trade
-const CHARGES_PER_TRADE = 30;     // ₹30 per trade
 const TRADING_DAYS_PER_YEAR = 252;
+const FALLBACK_CHARGES_PER_TRADE = 55;  // used when trade-level data missing
 
 export default function BaselineView() {
   const { name } = useParams();
@@ -36,8 +37,9 @@ export default function BaselineView() {
     for (const t of trades) {
       const d = t.date;
       if (!d) continue;
-      if (!byDateMap[d]) byDateMap[d] = { date: d, trades: 0, wins: 0, losses: 0, pnl: 0 };
+      if (!byDateMap[d]) byDateMap[d] = { date: d, trades: 0, wins: 0, losses: 0, pnl: 0, tradeList: [] };
       byDateMap[d].trades += 1;
+      byDateMap[d].tradeList.push(t);
       const pnl = t.pnl ?? 0;
       if (pnl > 0) byDateMap[d].wins += 1;
       else byDateMap[d].losses += 1;
@@ -46,7 +48,10 @@ export default function BaselineView() {
     const byDate = Object.values(byDateMap).sort((a, b) => a.date.localeCompare(b.date));
     let cum = 0;
     const points = byDate.map((row) => {
-      const netPnl = row.pnl - (row.trades || 0) * CHARGES_PER_TRADE;
+      const charges = row.tradeList?.length
+        ? sumChargesForTrades(row.tradeList)
+        : (row.trades || 0) * FALLBACK_CHARGES_PER_TRADE;
+      const netPnl = row.pnl - charges;
       cum += netPnl;
       return { date: row.date, pnl: netPnl, cumulativePnl: cum };
     });

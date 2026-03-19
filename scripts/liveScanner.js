@@ -100,8 +100,10 @@ function buildHistoricalBars(candles, dateStr) {
   return rows;
 }
 
-/** Detect whether the current just-closed bar qualifies on price structure alone (ignoring volume filters). */
-function findEntryIgnoringVolumeForCurrentBar(bars, prevClose) {
+/** Detect whether the current just-closed bar qualifies on price structure alone (ignoring volume filters).
+ *  When officialDayOpen is provided (from 9:20 API), use it — live bars can miss 09:15 so bars[0].open may be wrong.
+ */
+function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen = null) {
   if (!prevClose || prevClose <= 0) return null;
 
   const FIRST_45_BARS = 20;
@@ -121,7 +123,7 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose) {
 
   const i = bars.length - 1;
   const bar = bars[i];
-  const dayOpen = bars[0].open;
+  const dayOpen = (officialDayOpen != null && officialDayOpen > 0) ? officialDayOpen : bars[0].open;
   const gapPct = prevClose > 0 ? ((dayOpen - prevClose) / prevClose) * 100 : 0;
   if (gapPct > GAP_UP_MAX_PCT) return null;
 
@@ -328,107 +330,80 @@ async function main() {
   const prevCloseBySymbol = new Map();
   const prevDayVolumeBySymbol = new Map();   // from daily OHLCV API only (prev day volume)
   const dayOpenBySymbol = new Map();
-  const CONCURRENCY = 15;
+  const CONCURRENCY = 5; // reduced to avoid Kite API rate limits
   const symbolsForPrevDay = [...symbolToToken.keys()];
-  const totalBatches = Math.ceil(symbolsForPrevDay.length / CONCURRENCY);
   const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
   const rangeFromStr = dateMinusDays(todayStr, 7);
   const dayFrom = new Date(`${rangeFromStr}T00:00:00+05:30`);
   const dayTo = new Date(`${todayStr}T23:59:59+05:30`);
-  // Same as analyzePnl: prev day from daily API only; 3m only for current day (built from ticks below).
-  const missingVolumeReasons = new Map(); // symbol -> reason string (only when volume not set)
-  console.error('Prev day (close + volume) from daily API only, range', rangeFromStr, '→', todayStr, '|', symbolsForPrevDay.length, 'symbols');
-  for (let i = 0; i < symbolsForPrevDay.length; i += CONCURRENCY) {
-    const chunk = symbolsForPrevDay.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      chunk.map(async (symbol) => {
-        let set = false;
-        try {
-          const token = symbolToToken.get(symbol);
-          const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
-          if (candles && candles.length > 0) {
-            for (const c of candles) {
-              const d = candleDateStr(c);
-              if (d < todayStr) {
-                prevCloseBySymbol.set(symbol, c.close);
-                prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
-                set = true;
+
+  /** Prev-day fetch runs in background. Entry logic skips symbols until data is ready. */
+  const fetchPrevDayData = async () => {
+    const missingVolumeReasons = new Map();
+    const totalBatches = Math.ceil(symbolsForPrevDay.length / CONCURRENCY);
+    console.error('Prev day (background): loading close+volume, range', rangeFromStr, '→', todayStr, '(batch=', CONCURRENCY, ')');
+    for (let i = 0; i < symbolsForPrevDay.length; i += CONCURRENCY) {
+      const chunk = symbolsForPrevDay.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        chunk.map(async (symbol) => {
+          let set = false;
+          try {
+            const token = symbolToToken.get(symbol);
+            const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
+            if (candles && candles.length > 0) {
+              for (const c of candles) {
+                const d = candleDateStr(c);
+                if (d < todayStr) {
+                  prevCloseBySymbol.set(symbol, c.close);
+                  prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+                  set = true;
+                }
               }
             }
-          }
-          if (!set) {
-            const reason = (!candles || candles.length === 0) ? 'no_candles' : 'no_prev_day_in_range';
-            missingVolumeReasons.set(symbol, reason);
-          }
-        } catch (e) {
-          missingVolumeReasons.set(symbol, 'api_error: ' + (e && e.message ? e.message : String(e)));
-        }
-      })
-    );
-    const batchNum = Math.floor(i / CONCURRENCY) + 1;
-    if (batchNum % 20 === 0 || batchNum === totalBatches) {
-      console.error('Prev day progress:', batchNum, '/', totalBatches, '| prev close:', prevCloseBySymbol.size, '| prev volume:', prevDayVolumeBySymbol.size);
-    }
-  }
-  // Fix #1: retry once for any symbols that failed the daily volume fetch
-  const missingVol = symbolsForPrevDay.filter(s => !prevDayVolumeBySymbol.has(s));
-  if (missingVol.length > 0) {
-    console.error(`Daily volume missing for ${missingVol.length} symbols — retrying in 2s...`);
-    await new Promise(r => setTimeout(r, 2000));
-    for (let i = 0; i < missingVol.length; i += CONCURRENCY) {
-      const chunk = missingVol.slice(i, i + CONCURRENCY);
-      await Promise.all(chunk.map(async (symbol) => {
-        let set = false;
-        try {
-          const token = symbolToToken.get(symbol);
-          const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
-          if (candles && candles.length > 0) {
-            for (const c of candles) {
-              const d = candleDateStr(c);
-              if (d < todayStr) {
-                prevCloseBySymbol.set(symbol, c.close);
-                prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
-                set = true;
-              }
+            if (!set) {
+              missingVolumeReasons.set(symbol, (!candles || candles.length === 0) ? 'no_candles' : 'no_prev_day_in_range');
             }
+          } catch (e) {
+            missingVolumeReasons.set(symbol, 'api_error: ' + (e && e.message ? e.message : String(e)));
           }
-          if (!set) {
-            const reason = (!candles || candles.length === 0) ? 'no_candles' : 'no_prev_day_in_range';
-            missingVolumeReasons.set(symbol, reason);
-          }
-        } catch (e) {
-          missingVolumeReasons.set(symbol, 'api_error: ' + (e && e.message ? e.message : String(e)));
-        }
-      }));
-    }
-    const stillMissing = missingVol.filter(s => !prevDayVolumeBySymbol.has(s));
-    console.error(`After retry: ${prevDayVolumeBySymbol.size} symbols have daily volume; still missing: ${stillMissing.length}`);
-    // Log reasons for missing daily volume (for still-missing, use latest reason from map)
-    const reasonCounts = new Map();
-    for (const s of stillMissing.length ? stillMissing : missingVol) {
-      const r = missingVolumeReasons.get(s) || 'unknown';
-      reasonCounts.set(r, (reasonCounts.get(r) || 0) + 1);
-    }
-    if (reasonCounts.size > 0) {
-      console.error('Missing daily volume — reasons:');
-      for (const [reason, count] of [...reasonCounts.entries()].sort((a, b) => b[1] - a[1])) {
-        console.error('  ', count, '×', reason);
+        })
+      );
+      const batchNum = Math.floor(i / CONCURRENCY) + 1;
+      if (batchNum % 20 === 0 || batchNum === totalBatches) {
+        console.error('Prev day (background):', batchNum, '/', totalBatches, '| ready:', prevDayVolumeBySymbol.size);
       }
-      const missingList = stillMissing.length ? stillMissing : missingVol;
-      const list = missingList.slice(0, 50);
-      console.error('  Symbols (up to 50):', list.join(', '), list.length < missingList.length ? '...' : '');
+      await new Promise((r) => setImmediate(r)); // yield so ticks/bars/heartbeat can run
     }
-  }
-  console.error('Prev day daily OHLCV done:', prevDayVolumeBySymbol.size, '/', symbolsForPrevDay.length, 'symbols have volume.');
-
-  if (prevCloseBySymbol.size === 0) {
-    console.error('Fatal: No previous day close data from API. Cannot run v2 scanner.');
-    logToFile('fatal', 'no_prev_day_close');
-    process.exit(1);
-  }
-
-  // Prev day volume for v2 filter (2.7x): strictly daily OHLC volume only (no 3m override).
-  console.error('Prev day volume: daily OHLC only (no 3m override).');
+    const missingVol = symbolsForPrevDay.filter(s => !prevDayVolumeBySymbol.has(s));
+    if (missingVol.length > 0) {
+      await new Promise(r => setTimeout(r, 2000));
+      for (let i = 0; i < missingVol.length; i += CONCURRENCY) {
+        const chunk = missingVol.slice(i, i + CONCURRENCY);
+        await Promise.all(chunk.map(async (symbol) => {
+          try {
+            const token = symbolToToken.get(symbol);
+            const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
+            if (candles?.length > 0) {
+              for (const c of candles) {
+                const d = candleDateStr(c);
+                if (d < todayStr) {
+                  prevCloseBySymbol.set(symbol, c.close);
+                  prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+                  return;
+                }
+              }
+            }
+          } catch {}
+        }));
+      }
+    }
+    console.error('Prev day done:', prevDayVolumeBySymbol.size, '/', symbolsForPrevDay.length, '— entry logic active');
+    logToFile('prev_day_ready', { count: prevDayVolumeBySymbol.size, total: symbolsForPrevDay.length });
+  };
+  fetchPrevDayData().catch((e) => {
+    console.error('Prev day fetch failed:', e?.message);
+    logToFile('prev_day_fatal', e?.message);
+  });
 
   const todayFrom = new Date(`${todayStr}T00:00:00+05:30`);
   const todayTo = new Date(`${todayStr}T23:59:59+05:30`);
@@ -472,8 +447,9 @@ async function main() {
     console.error('Today open deferred to 9:20 IST (in', Math.round(delayMs / 1000), 's)');
     setTimeout(() => { fetchTodayOpen().catch((e) => console.error('fetchTodayOpen failed', e?.message)); }, delayMs);
   } else {
-    await fetchTodayOpen();
+    fetchTodayOpen().catch((e) => console.error('fetchTodayOpen failed', e?.message));
   }
+  // Connect immediately — today open runs in background; gap filter skips when dayOpen not ready
 
   const sessionPath = path.join(process.cwd(), '.kite_session');
   const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
@@ -655,7 +631,18 @@ async function main() {
           if (!telegramConfigured()) {
             logToFile('telegram_skip', { reason: 'not_configured', symbol: pending.symbol, time: pending.time, msg: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env' });
           }
-          sendAlert(`ENTRY ${pending.symbol} #${pos.id} @ ${pending.time} | entry=${entryPrice} SL=${stop} 3%→trail`);
+          const buyVal = Math.round(entryPrice * pos.qty * 100) / 100;
+          sendAlert([
+            'ENTRY',
+            `Symbol: ${pending.symbol}`,
+            `ID: #${pos.id}`,
+            `Time: ${pending.time}`,
+            `Entry: ₹${entryPrice}`,
+            `SL: ₹${stop}`,
+            `Qty: ${pos.qty}`,
+            `Buy Value: ₹${buyVal.toLocaleString('en-IN')}`,
+            '3% → trail',
+          ].join('\n'));
         } catch (e) {
           if (pending.attempts === 1 || pending.attempts % 6 === 0) {
             const reason = e?.message ?? String(e);
@@ -687,6 +674,17 @@ async function main() {
         for (const p of swept) {
           console.error(`  ${p.symbol} #${p.id} → eod_sweep @ ${p.exitPrice} | P&L ${pnlStr(p.pnl)}`);
           logToFile('exit', { symbol: p.symbol, date: todayISTForEod, time: '15:30', id: p.id, reason: 'eod_sweep', exitPrice: p.exitPrice, qty: p.qty, pnl: p.pnl });
+          const buyValSweep = Math.round(p.entryPrice * p.qty * 100) / 100;
+          const sellValSweep = Math.round(p.exitPrice * p.qty * 100) / 100;
+          sendAlert([
+            'EXIT (EOD sweep)',
+            `Symbol: ${p.symbol}`,
+            `ID: #${p.id}`,
+            `Time: 15:30`,
+            `Buy Value: ₹${buyValSweep.toLocaleString('en-IN')}`,
+            `Sell Value: ₹${sellValSweep.toLocaleString('en-IN')}`,
+            `P&L: ${pnlStr(p.pnl)}`,
+          ].join('\n'));
         }
         logSummary('EOD_SWEEP');
       }
@@ -736,7 +734,17 @@ async function main() {
           console.error(msg);
           logToFile('exit', { symbol, date, time, id: pos.id, reason: 'initial_sl', barLow: low, exitPrice: r.exitPrice, qty: r.qty, pnl: r.pnl });
           logSummary('after_exit');
-          sendAlert(`EXIT ${symbol} #${pos.id} SL hit @ ${r.exitPrice} | P&L ${pnlStr(r.pnl)}`);
+          const buyValSl = Math.round(pos.entryPrice * r.qty * 100) / 100;
+          const sellValSl = Math.round(r.exitPrice * r.qty * 100) / 100;
+          sendAlert([
+            'EXIT (SL hit)',
+            `Symbol: ${symbol}`,
+            `ID: #${pos.id}`,
+            `Time: ${time}`,
+            `Buy Value: ₹${buyValSl.toLocaleString('en-IN')}`,
+            `Sell Value: ₹${sellValSl.toLocaleString('en-IN')}`,
+            `P&L: ${pnlStr(r.pnl)}`,
+          ].join('\n'));
           break;
         }
         case 'exit_trail': {
@@ -744,7 +752,17 @@ async function main() {
           console.error(msg);
           logToFile('exit', { symbol, date, time, id: pos.id, reason: 'trail_stop', close, trailLevel: r.trailLevel, hwm: r.hwm, exitPrice: r.exitPrice, qty: r.qty, pnl: r.pnl });
           logSummary('after_exit');
-          sendAlert(`EXIT ${symbol} #${pos.id} trail stop @ ${r.exitPrice} | P&L ${pnlStr(r.pnl)}`);
+          const buyValTrail = Math.round(pos.entryPrice * r.qty * 100) / 100;
+          const sellValTrail = Math.round(r.exitPrice * r.qty * 100) / 100;
+          sendAlert([
+            'EXIT (trail stop)',
+            `Symbol: ${symbol}`,
+            `ID: #${pos.id}`,
+            `Time: ${time}`,
+            `Buy Value: ₹${buyValTrail.toLocaleString('en-IN')}`,
+            `Sell Value: ₹${sellValTrail.toLocaleString('en-IN')}`,
+            `P&L: ${pnlStr(r.pnl)}`,
+          ].join('\n'));
           break;
         }
         case 'exit_eod': {
@@ -752,14 +770,34 @@ async function main() {
           console.error(msg);
           logToFile('exit', { symbol, date, time, id: pos.id, reason: 'eod', exitPrice: r.exitPrice, qty: r.qty, pnl: r.pnl });
           logSummary('after_eod_exit');
-          sendAlert(`EXIT ${symbol} #${pos.id} EOD @ ${r.exitPrice} | P&L ${pnlStr(r.pnl)}`);
+          const buyValEod = Math.round(pos.entryPrice * r.qty * 100) / 100;
+          const sellValEod = Math.round(r.exitPrice * r.qty * 100) / 100;
+          sendAlert([
+            'EXIT (EOD)',
+            `Symbol: ${symbol}`,
+            `ID: #${pos.id}`,
+            `Time: ${time}`,
+            `Buy Value: ₹${buyValEod.toLocaleString('en-IN')}`,
+            `Sell Value: ₹${sellValEod.toLocaleString('en-IN')}`,
+            `P&L: ${pnlStr(r.pnl)}`,
+          ].join('\n'));
           break;
         }
         case 'first_target_hit': {
           const msg = `[TARGET] ${symbol} #${pos.id} 3% TARGET HIT @ ${time} | close=${close} >= ${r.firstTargetPrice} | unrealized=${pnlStr(r.unrealizedPnl)} | trailing from hwm=${r.hwm}`;
           console.error(msg);
           logToFile('first_target', { symbol, date, time, id: pos.id, close, firstTargetPrice: r.firstTargetPrice, unrealizedPnl: r.unrealizedPnl, hwm: r.hwm });
-          sendAlert(`TARGET ${symbol} #${pos.id} 3% hit @ ${close} — now trailing`);
+          const buyValTgt = Math.round(pos.entryPrice * r.qty * 100) / 100;
+          sendAlert([
+            'TARGET (3% hit)',
+            `Symbol: ${symbol}`,
+            `ID: #${pos.id}`,
+            `Time: ${time}`,
+            `Close: ₹${close}`,
+            `Buy Value: ₹${buyValTgt.toLocaleString('en-IN')}`,
+            `Unrealized: ${pnlStr(r.unrealizedPnl)}`,
+            '→ now trailing',
+          ].join('\n'));
           break;
         }
         case 'hold_trail':
@@ -771,15 +809,19 @@ async function main() {
       }
     }
 
-    // ── STEP 2: v2 entry logic (4% move + pullback/breakout, 2.7x vol, gap ≤2%, 3% target then 1.5% trail)
+    // ── STEP 2: v2 entry logic — always run; skip only when data missing
     const todayBars = series[date] || [];
+    if (todayBars.length < 21) return;
+
     const prevClose = prevCloseBySymbol.get(symbol) ?? null;
     const prevVol = prevDayVolumeBySymbol.get(symbol) ?? 0;
-    const prevDay = prevClose != null && prevClose > 0 ? { close: prevClose, volume: prevVol } : null;
+    if (!prevClose || prevClose <= 0) return; // prev-day data not ready yet
+    const prevDay = { close: prevClose, volume: prevVol };
+
     let skipEntry = false;
-    if (prevDay && gapUpThresholdPct != null && Number.isFinite(gapUpThresholdPct)) {
+    if (gapUpThresholdPct != null && Number.isFinite(gapUpThresholdPct)) {
       const dayOpen = dayOpenBySymbol.get(symbol);
-      if (dayOpen != null && prevClose > 0 && dayOpen > prevClose) {
+      if (dayOpen != null && dayOpen > prevClose) {
         const gapPct = ((dayOpen - prevClose) / prevClose) * 100;
         if (gapPct >= gapUpThresholdPct) {
           logToFile('skip', { symbol, date, time, reason: `gap_override_${gapPct.toFixed(1)}pct >= ${gapUpThresholdPct}pct` });
@@ -787,8 +829,9 @@ async function main() {
         }
       }
     }
-    if (!skipEntry && prevDay && todayBars.length >= 21) {
-      const result = findEntryIgnoringVolumeForCurrentBar(todayBars, prevClose);
+    if (!skipEntry) {
+      const officialDayOpen = dayOpenBySymbol.get(symbol);
+      const result = findEntryIgnoringVolumeForCurrentBar(todayBars, prevClose, officialDayOpen);
       const resultTime5 = (result?.time || '').slice(0, 5);
       const barTime5 = (time || '').slice(0, 5);
       if (result && resultTime5 === barTime5) {

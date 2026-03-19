@@ -11,6 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { hasBacktestData } from '../lib/loadBacktestData.js';
 import { runBacktestForDate } from './runBacktest.js';
+import { sumChargesForTrades } from '../../lib/zerodhaCharges.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -18,7 +19,7 @@ const DATA_DIR = path.join(ROOT, 'v2', 'data');
 
 const TOTAL_CAPITAL = 300000;     // ₹3 lakh
 const CAPITAL_PER_TRADE = 50000;  // ₹50k per trade
-const CHARGES_PER_TRADE = 30;    // ₹30 per trade
+const FALLBACK_CHARGES_PER_TRADE = 55;  // when trade-level data missing
 const TRADING_DAYS_PER_YEAR = 252;
 
 function getDatesWithData(monthFilter) {
@@ -51,7 +52,10 @@ function main() {
     const out = runBacktestForDate(backtestDate, { quiet: true });
     if (!out) continue;
     const trades = out.trades ?? 0;
-    const netPnl = (out.totalPnl ?? 0) - trades * CHARGES_PER_TRADE;
+    const charges = out.results?.length
+      ? sumChargesForTrades(out.results)
+      : trades * FALLBACK_CHARGES_PER_TRADE;
+    const netPnl = (out.totalPnl ?? 0) - charges;
     rows.push({ date: backtestDate, pnl: out.totalPnl, netPnl, trades });
   }
 
@@ -94,7 +98,7 @@ function main() {
   console.log(`Total PnL: ₹${totalPnl.toFixed(2)}`);
   const returnPct = TOTAL_CAPITAL > 0 ? (totalPnl / TOTAL_CAPITAL) * 100 : 0;
   console.log(`Return % (on ₹${TOTAL_CAPITAL.toLocaleString()}): ${returnPct.toFixed(2)}%`);
-  console.log(`Mean daily return (on ₹${CAPITAL_PER_TRADE.toLocaleString()}, after ₹${CHARGES_PER_TRADE}/trade): ${(meanReturn * 100).toFixed(4)}%`);
+  console.log(`Mean daily return (on ₹${CAPITAL_PER_TRADE.toLocaleString()}, after Zerodha charges): ${(meanReturn * 100).toFixed(4)}%`);
   console.log(`Std daily return: ${(stdReturn * 100).toFixed(4)}%`);
   console.log(`Sharpe ratio (annualized, risk-free=0): ${sharpe != null ? sharpe.toFixed(3) : 'n/a'}`);
   console.log(`Max drawdown: ₹${maxDrawdown.toFixed(2)}`);
