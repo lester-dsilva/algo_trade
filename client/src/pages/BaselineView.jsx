@@ -4,10 +4,25 @@ import * as api from '../api';
 import EquityCurveChart from '../components/EquityCurveChart';
 import { sumChargesForTrades } from '../lib/zerodhaCharges';
 
-const TOTAL_CAPITAL = 300000;       // ₹3 lakh
-const CAPITAL_PER_TRADE = 50000;   // ₹50k per trade
+/** Defaults when baseline JSON has no config (older saves) */
+const DEFAULT_CAPITAL_PER_TRADE = 50000;
+/** Must match v2/scripts/runBacktest.js MAX_CONCURRENT_TRADES */
+const MAX_CONCURRENT_TRADES = 6;
 const TRADING_DAYS_PER_YEAR = 252;
 const FALLBACK_CHARGES_PER_TRADE = 55;  // used when trade-level data missing
+
+function getSizingFromBaseline(baseline) {
+  const raw = baseline?.config?.capitalPerTrade;
+  const capitalPerTrade = Number.isFinite(Number(raw)) && Number(raw) > 0
+    ? Number(raw)
+    : DEFAULT_CAPITAL_PER_TRADE;
+  const totalCapital = capitalPerTrade * MAX_CONCURRENT_TRADES;
+  return { capitalPerTrade, totalCapital };
+}
+
+function round2(n) {
+  return Math.round((n || 0) * 100) / 100;
+}
 
 export default function BaselineView() {
   const { name } = useParams();
@@ -28,10 +43,31 @@ export default function BaselineView() {
       .finally(() => setLoading(false));
   }, [name]);
 
-  const { equityPoints, sharpe, maxDrawdown, returnPct } = useMemo(() => {
+  const {
+    equityPoints,
+    sharpe,
+    maxDrawdown,
+    returnPctNet,
+    totalCharges,
+    grossPnl,
+    netPnl,
+    totalCapital,
+    capitalPerTrade,
+  } = useMemo(() => {
     if (!baseline?.trades?.length) {
-      return { equityPoints: [], sharpe: null, maxDrawdown: 0, returnPct: null };
+      return {
+        equityPoints: [],
+        sharpe: null,
+        maxDrawdown: 0,
+        returnPctNet: null,
+        totalCharges: 0,
+        grossPnl: 0,
+        netPnl: 0,
+        totalCapital: DEFAULT_CAPITAL_PER_TRADE * MAX_CONCURRENT_TRADES,
+        capitalPerTrade: DEFAULT_CAPITAL_PER_TRADE,
+      };
     }
+    const { capitalPerTrade, totalCapital } = getSizingFromBaseline(baseline);
     const trades = baseline.trades;
     const byDateMap = {};
     for (const t of trades) {
@@ -55,7 +91,7 @@ export default function BaselineView() {
       cum += netPnl;
       return { date: row.date, pnl: netPnl, cumulativePnl: cum };
     });
-    const dailyReturns = points.map((p) => p.pnl / CAPITAL_PER_TRADE);
+    const dailyReturns = points.map((p) => p.pnl / capitalPerTrade);
     const n = dailyReturns.length;
     const meanReturn = n ? dailyReturns.reduce((a, b) => a + b, 0) / n : 0;
     const variance = n > 1 ? dailyReturns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / (n - 1) : 0;
@@ -68,10 +104,26 @@ export default function BaselineView() {
       const dd = peak - p.cumulativePnl;
       if (dd > maxDrawdown) maxDrawdown = dd;
     }
-    const returnPct = points.length && TOTAL_CAPITAL > 0
-      ? (points[points.length - 1].cumulativePnl / TOTAL_CAPITAL) * 100
+    const grossPnl = baseline.totalPnl ?? trades.reduce((s, t) => s + (t.pnl ?? 0), 0);
+    const totalCharges = sumChargesForTrades(trades);
+    const finalCumulativeNet = points.length ? points[points.length - 1].cumulativePnl : 0;
+    // Net matches equity curve endpoint (daily gross − charges); may differ slightly from grossPnl − charges if totals drift
+    const netPnl = round2(finalCumulativeNet);
+    // Net return vs deployed capital (6 × per-trade); equity curve is already net of charges per day
+    const returnPctNet = totalCapital > 0
+      ? (finalCumulativeNet / totalCapital) * 100
       : null;
-    return { equityPoints: points, sharpe, maxDrawdown, returnPct };
+    return {
+      equityPoints: points,
+      sharpe,
+      maxDrawdown,
+      returnPctNet,
+      totalCharges,
+      grossPnl,
+      netPnl,
+      totalCapital,
+      capitalPerTrade,
+    };
   }, [baseline]);
 
   if (loading) return <div className="page"><p>Loading baseline…</p></div>;
@@ -88,9 +140,21 @@ export default function BaselineView() {
         <p className="muted">Saved at {new Date(baseline.savedAt).toLocaleString()}</p>
       )}
       <p>
-        <strong>Total PnL:</strong> ₹{baseline.totalPnl?.toFixed(2)} · <strong>Trades:</strong> {baseline.totalTrades}
-        {typeof returnPct === 'number' && (
-          <> · <strong>Return:</strong> {returnPct.toFixed(2)}%</>
+        <strong>Trades:</strong> {baseline.totalTrades}
+        {' · '}
+        <strong>Gross PnL:</strong> ₹{grossPnl?.toFixed(2)}
+        {' · '}
+        <strong>Charges (est.):</strong> ₹{totalCharges?.toFixed(2)}
+        {' · '}
+        <strong>Net PnL:</strong> ₹{netPnl?.toFixed(2)}
+      </p>
+      <p className="muted">
+        Sizing: ₹{capitalPerTrade?.toLocaleString('en-IN')} per trade × {MAX_CONCURRENT_TRADES} slots = ₹{totalCapital?.toLocaleString('en-IN')} notional capital (from saved baseline config; default ₹50k×6 if missing).
+        {typeof returnPctNet === 'number' && (
+          <>
+            {' '}
+            <strong>Return (net / charges):</strong> {returnPctNet.toFixed(2)}% on ₹{totalCapital?.toLocaleString('en-IN')}
+          </>
         )}
       </p>
       <p>
@@ -118,7 +182,7 @@ export default function BaselineView() {
           <h2>Equity curve</h2>
           <p className="muted">
             Sharpe: {sharpe != null ? sharpe.toFixed(3) : 'n/a'} · Max drawdown: ₹{maxDrawdown?.toFixed(2)}
-            {typeof returnPct === 'number' && ` · Return: ${returnPct.toFixed(2)}%`}
+            {typeof returnPctNet === 'number' && ` · Net return: ${returnPctNet.toFixed(2)}% (on ₹${totalCapital?.toLocaleString('en-IN')})`}
           </p>
           <EquityCurveChart points={equityPoints} />
         </section>

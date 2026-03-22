@@ -3,7 +3,7 @@
  * build 3m candles from Kite ticks, run v2 entry logic on each new bar, persist paper positions, send Telegram alerts.
  *
  * v2 logic: 4% move in first 45 min, pullback/consolidation, breakout (2.7x day vol, 2x breakout vol, gap ≤2%, wicks ≤35%).
- * Exits: initial SL below breakout low; 3% first target then 1.5% trail; EOD 15:24. Position size ₹50,000.
+ * Exits: fixed SL 1% below entry (v2 entryLogic); 3% first target then 1.5% trail; EOD 15:24. Position size ₹50,000.
  *
  * Usage: node scripts/liveScanner.js
  *
@@ -115,7 +115,7 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   const VOL_AVG_LOOKBACK = 5;
   const CONSOLIDATION_RANGE_PCT = 2;
   const MAX_ENTRY_TIME = '12:30';
-  const FIXED_SL_PCT = 1.5;
+  const FIXED_SL_PCT = 1;
   const MAX_DAY_MOVE_PCT = 14;
   const BREAKOUT_STRENGTH_MIN_PCT = 0.4;
 

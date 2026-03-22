@@ -10,7 +10,7 @@
  * - Gap up <= 2% (day open vs prev close)
  * - Entry candle: no large wicks (each wick <= 35% of range)
  * - Breakout candle volume >= 1.1x avg of previous 5 bars
- * - Fixed 1.5% SL below entry (always)
+ * - Fixed 1% SL below entry (always)
  * - Breakout close must be meaningfully above recent high (stronger breakout)
  */
 
@@ -26,9 +26,10 @@ const BREAKOUT_VOL_MULT = 1.1; // allow breakouts with ≥1.1x avg(prev 5) so co
 const DAY_VOL_MULT = 2.7;     // day volume >= 2.7x prev day
 const CONSOLIDATION_RANGE_PCT = 2;   // consolidation = range of last 5 bars <= 2% (includes 10:12–10:39 style)
 const MAX_ENTRY_TIME = '12:30';      // do not take trades after 12:30 (bar time <= 12:30 allowed)
-const FIXED_SL_PCT = 1.5;             // fixed SL 1.5% below entry
+const FIXED_SL_PCT = 1;               // fixed SL 1% below entry
 const MAX_DAY_MOVE_PCT = 14;          // skip entries if day move from open > 14% at entry
 const BREAKOUT_STRENGTH_MIN_PCT = 0.4; // close must be at least 0.4% above recent high
+const TWO_BAR_COMBINED_UP_MAX_PCT = 9; // skip if previous+current bar up% sum is too stretched
 
 /**
  * Default config keys that can be overridden via opts (e.g. when creating a baseline).
@@ -46,6 +47,7 @@ export const ENTRY_DEFAULTS = {
   breakoutStrengthMinPct: BREAKOUT_STRENGTH_MIN_PCT,
   dayVolMult: DAY_VOL_MULT,
   breakoutVolMult: BREAKOUT_VOL_MULT,
+  twoBarCombinedUpMaxPct: TWO_BAR_COMBINED_UP_MAX_PCT,
 };
 
 /**
@@ -70,6 +72,7 @@ export function findEntry(bars, prevDay, opts = {}) {
   const breakoutStrengthMinPct = opts.breakoutStrengthMinPct ?? BREAKOUT_STRENGTH_MIN_PCT;
   const dayVolMult = opts.dayVolMult ?? DAY_VOL_MULT;
   const breakoutVolMult = opts.breakoutVolMult ?? BREAKOUT_VOL_MULT;
+  const twoBarCombinedUpMaxPct = opts.twoBarCombinedUpMaxPct ?? TWO_BAR_COMBINED_UP_MAX_PCT;
 
   function skip(reason) {
     if (debug && bar) failedBars.push({ time: (bar.time || '').slice(0, 5), reason });
@@ -148,6 +151,19 @@ export function findEntry(bars, prevDay, opts = {}) {
 
     const avgVol5 = recent5.reduce((s, b) => s + (b.volume || 0), 0) / VOL_AVG_LOOKBACK;
     if (avgVol5 > 0 && (bar.volume || 0) < breakoutVolMult * avgVol5) { skip(`vol ${((bar.volume || 0) / avgVol5).toFixed(1)}x < ${breakoutVolMult}x`); continue; }
+
+    const prevBar = i > 0 ? bars[i - 1] : null;
+    const prevUpPct = prevBar && prevBar.open > 0
+      ? Math.max(0, ((prevBar.close - prevBar.open) / prevBar.open) * 100)
+      : 0;
+    const currUpPct = bar.open > 0
+      ? Math.max(0, ((bar.close - bar.open) / bar.open) * 100)
+      : 0;
+    const twoBarCombinedUpPct = prevUpPct + currUpPct;
+    if (twoBarCombinedUpPct > twoBarCombinedUpMaxPct) {
+      skip(`2-bar up ${twoBarCombinedUpPct.toFixed(2)}% > ${twoBarCombinedUpMaxPct}%`);
+      continue;
+    }
 
     const entry = bar.close;
     const stop = Math.round(entry * (1 - fixedSlPct / 100) * 100) / 100;

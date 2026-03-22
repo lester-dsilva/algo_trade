@@ -645,7 +645,7 @@ apiRouter.get('/baselines', (req, res) => {
 });
 
 // POST /api/backtest-all-save-baseline — run backtest for all dates in parallel, save baseline by name
-// Body: { name: string, config?: object } — config overrides for entry/exit (dayVolMult, firstTargetPct, trailPct, etc.)
+// Body: { name: string, config?: object } — config overrides (dayVolMult, firstTargetPct, trailPct, capitalPerTrade ₹, etc.)
 apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
   const name = sanitizeBaselineName(req.body?.name);
   if (!name) {

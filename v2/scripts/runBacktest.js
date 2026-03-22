@@ -20,8 +20,8 @@ const ROOT = path.resolve(__dirname, '../..');
 
 // Exit params (match positionStore / analyzePnl)
 const POSITION_VALUE = 50000;
-const TOTAL_CAPITAL = 300000;   // ₹3 lakh — max concurrent capital
-const MAX_TRADES_PER_DAY = Math.floor(TOTAL_CAPITAL / POSITION_VALUE); // 6 trades (50k each)
+/** Max concurrent day trades; total capital available = positionValue × this */
+const MAX_CONCURRENT_TRADES = 6;
 const FIRST_TARGET_PCT = 3;
 const TRAIL_PCT = 1.5;
 const EOD_BAR_TIME = '15:24';
@@ -48,7 +48,8 @@ function resolveSymbol(prevDayOhlc, normalizedName) {
 function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
   const firstTargetPct = opts.firstTargetPct ?? FIRST_TARGET_PCT;
   const trailPct = opts.trailPct ?? TRAIL_PCT;
-  const qty = Math.floor(POSITION_VALUE / entry);
+  const positionValue = opts.positionValue ?? POSITION_VALUE;
+  const qty = Math.floor(positionValue / entry);
   if (qty <= 0) return { exitReason: 'skip', exitPrice: entry, pnl: 0, qty: 0, exitBarIndex: entryBarIndex };
 
   const firstTarget = Math.round(entry * (1 + firstTargetPct / 100) * 100) / 100;
@@ -91,11 +92,25 @@ function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
 
 /**
  * Run backtest for one date. Returns { backtestDate, results, totalPnl, trades, wins, losses } or null if no data.
- * opts may include firstTargetPct, trailPct (exit) and entry overrides (dayVolMult, gapUpMaxPct, etc.) passed to findEntry.
+ * opts may include capitalPerTrade (₹ per trade, default 50k), firstTargetPct, trailPct (exit),
+ * and entry overrides (dayVolMult, gapUpMaxPct, etc.) passed to findEntry.
  */
 export function runBacktestForDate(backtestDate, opts = {}) {
-  const { quiet = false, firstTargetPct, trailPct, ...entryOpts } = opts;
-  const simOpts = {};
+  const {
+    quiet = false,
+    firstTargetPct,
+    trailPct,
+    capitalPerTrade,
+    positionValue: positionValueOpt,
+    ...entryOpts
+  } = opts;
+
+  let pv = Number(capitalPerTrade ?? positionValueOpt);
+  if (!Number.isFinite(pv) || pv <= 0) pv = POSITION_VALUE;
+  // Total capital for the day = pv × 6; at most 6 concurrent slots of size pv each
+  const maxTradesPerDay = MAX_CONCURRENT_TRADES;
+
+  const simOpts = { positionValue: pv };
   if (firstTargetPct != null) simOpts.firstTargetPct = firstTargetPct;
   if (trailPct != null) simOpts.trailPct = trailPct;
   if (!hasBacktestData(backtestDate)) return null;
@@ -154,11 +169,11 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     });
   }
 
-  // Capital constraint: only first MAX_TRADES_PER_DAY by time (₹50k each, total ₹3L)
+  // Capital constraint: first maxTradesPerDay by time (₹pv per slot, total capital = pv × 6)
   const capped = results
     .slice()
     .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
-    .slice(0, MAX_TRADES_PER_DAY);
+    .slice(0, maxTradesPerDay);
 
   const totalPnl = capped.reduce((s, r) => s + r.pnl, 0);
   const wins = capped.filter((r) => r.pnl > 0).length;

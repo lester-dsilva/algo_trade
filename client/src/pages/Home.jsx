@@ -13,11 +13,13 @@ const BASELINE_CONFIG_DEFAULTS = {
   wickMaxPct: 0.35,
   consolidationRangePct: 2,
   maxEntryTime: '12:30',
-  fixedSlPct: 1.5,
+  fixedSlPct: 1,
   maxDayMovePct: 14,
   breakoutStrengthMinPct: 0.4,
   firstTargetPct: 3,
   trailPct: 1.5,
+  /** ₹ per trade; total day capital = 6 × this; up to 6 concurrent slots */
+  capitalPerTrade: 50000,
 };
 
 export default function Home() {
@@ -280,6 +282,8 @@ export default function Home() {
                 <label><span className="muted">Pullback max from top %</span><input type="number" step="0.5" value={baselineConfig.pullbackMaxFromTopPct} onChange={(e) => setConfigValue('pullbackMaxFromTopPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label><span className="muted">Max entry time</span><input type="text" value={baselineConfig.maxEntryTime} onChange={(e) => setConfigValue('maxEntryTime', e.target.value)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label><span className="muted">Fixed SL %</span><input type="number" step="0.1" value={baselineConfig.fixedSlPct} onChange={(e) => setConfigValue('fixedSlPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
+                <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Sizing</label>
+                <label style={{ gridColumn: '1 / -1' }}><span className="muted">Capital per trade (₹)</span><input type="number" step="1000" min="1000" value={baselineConfig.capitalPerTrade} onChange={(e) => setConfigValue('capitalPerTrade', Math.max(1000, parseFloat(e.target.value) || 50000))} style={{ width: 100, marginLeft: 4 }} /><span className="muted" style={{ marginLeft: 8, fontSize: '0.85rem' }}>Default ₹50k · day capital = 6× this · max 6 trades</span></label>
                 <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Exit</label>
                 <label><span className="muted">First target %</span><input type="number" step="0.5" value={baselineConfig.firstTargetPct} onChange={(e) => setConfigValue('firstTargetPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label><span className="muted">Trail %</span><input type="number" step="0.1" value={baselineConfig.trailPct} onChange={(e) => setConfigValue('trailPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>

@@ -107,7 +107,7 @@ export async function deleteBaseline(name) {
   return handleRes(r);
 }
 
-/** POST run backtest for all available dates in parallel and save baseline by name. config = optional overrides (dayVolMult, firstTargetPct, etc.). */
+/** POST run backtest for all available dates in parallel and save baseline by name. config = optional overrides (dayVolMult, firstTargetPct, capitalPerTrade ₹, etc.). */
 export async function runBacktestAllSaveBaseline(name, config = {}) {
   const r = await fetch(`${API}/backtest-all-save-baseline`, {
     method: 'POST',
