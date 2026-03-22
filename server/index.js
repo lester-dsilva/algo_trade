@@ -35,6 +35,10 @@ const server = app.listen(PORT, () => {
   console.error(`Dashboard API: http://localhost:${PORT}`);
 });
 
+// Disable socket timeout — backtest-all over 200+ dates can take several minutes
+server.timeout = 0;
+server.keepAliveTimeout = 0;
+
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`Port ${PORT} is already in use. Stop the other process or set PORT=4001.`);

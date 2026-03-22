@@ -92,8 +92,14 @@ function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
 
 /**
  * Run backtest for one date. Returns { backtestDate, results, totalPnl, trades, wins, losses } or null if no data.
- * opts may include capitalPerTrade (₹ per trade, default 50k), firstTargetPct, trailPct (exit),
- * and entry overrides (dayVolMult, gapUpMaxPct, etc.) passed to findEntry.
+ * opts may include:
+ *   capitalPerTrade / positionValue — flat ₹ per trade (default 50k)
+ *   tiers — array of ₹ per trade by sequence index, e.g. [75000, 60000, 50000, 45000, 40000, 30000].
+ *            If provided, capitalPerTrade is used only for the initial simulation pass (sorting/capping);
+ *            each capped trade is then re-simulated with tiers[Math.min(seqIndex, tiers.length-1)].
+ *   firstTargetPct, trailPct — exit param overrides
+ *   ...entryOpts — passed through to findEntry (dayVolMult, gapUpMaxPct, etc.)
+ * Every result record includes seqIndex (0-based position within the day's capped trades).
  */
 export function runBacktestForDate(backtestDate, opts = {}) {
   const {
@@ -102,6 +108,7 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     trailPct,
     capitalPerTrade,
     positionValue: positionValueOpt,
+    tiers,
     ...entryOpts
   } = opts;
 
@@ -173,7 +180,22 @@ export function runBacktestForDate(backtestDate, opts = {}) {
   const capped = results
     .slice()
     .sort((a, b) => (a.time || '').localeCompare(b.time || ''))
-    .slice(0, maxTradesPerDay);
+    .slice(0, maxTradesPerDay)
+    .map((r, i) => ({ ...r, seqIndex: i }));
+
+  // If tiers provided, re-simulate each capped trade with its sequence-specific position value
+  if (Array.isArray(tiers) && tiers.length > 0) {
+    for (let i = 0; i < capped.length; i++) {
+      const tierPv = tiers[Math.min(i, tiers.length - 1)];
+      const bars = load3mForSymbol(backtestDate, capped[i].symbol);
+      const tierSim = simulateTrade(bars, capped[i].barIndex, capped[i].entry, capped[i].stop, {
+        ...simOpts,
+        positionValue: tierPv,
+      });
+      capped[i].pnl = tierSim.pnl;
+      capped[i].qty = tierSim.qty;
+    }
+  }
 
   const totalPnl = capped.reduce((s, r) => s + r.pnl, 0);
   const wins = capped.filter((r) => r.pnl > 0).length;

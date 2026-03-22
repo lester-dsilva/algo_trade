@@ -6,7 +6,11 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://localhost:4000',
+      '/api': {
+        target: 'http://localhost:4000',
+        proxyTimeout: 600000,  // 10 min — backtest-all over 200+ dates can take several minutes
+        timeout: 600000,
+      },
     },
   },
 })

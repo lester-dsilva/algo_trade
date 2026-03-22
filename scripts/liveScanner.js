@@ -27,8 +27,27 @@ import { placeBuyOrder, placeSellOrder } from '../lib/orderExecutor.js';
 const WATCHLIST_PATH = path.join(process.cwd(), 'config', 'nse_mcap_above_900cr.csv');
 const MAX_TOKENS = 3000;
 
-const LIVE_TRADING  = process.env.LIVE_TRADING === 'true';
-const MAX_POSITIONS = parseInt(process.env.MAX_POSITIONS || '6', 10);
+const LIVE_TRADING        = process.env.LIVE_TRADING === 'true';
+const MAX_POSITIONS       = parseInt(process.env.MAX_POSITIONS || '6', 10);
+const LIVE_TIERED_SIZING  = process.env.LIVE_TIERED_SIZING === 'true';
+
+// Tier % allocation per trade sequence (must sum to 100; default: front-weighted 25/20/17/15/13/10)
+const LIVE_TIER_PCTS = process.env.LIVE_TIER_PCTS
+  ? process.env.LIVE_TIER_PCTS.split(',').map((v) => parseFloat(v.trim())).filter((v) => Number.isFinite(v) && v > 0)
+  : [25, 20, 17, 15, 13, 10];
+
+// Capital to distribute. If set, tier amounts are auto-calculated: LIVE_CAPITAL × pct%.
+// Falls back to explicit LIVE_TIERS if LIVE_CAPITAL is not set.
+const LIVE_CAPITAL = parseInt(process.env.LIVE_CAPITAL || '0', 10);
+const LIVE_TIERS = (() => {
+  if (LIVE_CAPITAL > 0) {
+    return LIVE_TIER_PCTS.map((pct) => Math.max(1000, Math.floor(LIVE_CAPITAL * pct / 100)));
+  }
+  if (process.env.LIVE_TIERS) {
+    return process.env.LIVE_TIERS.split(',').map((v) => Math.max(1000, parseInt(v.trim(), 10))).filter((v) => Number.isFinite(v) && v > 0);
+  }
+  return [75000, 60000, 50000, 45000, 40000, 30000]; // last-resort default
+})();
 
 /** File log for debugging when away during market hours. Logs to data/live_scanner.log by default. Set LIVE_SCANNER_LOG=0 to disable, or LOG_PATH for custom path. */
 const LOG_ENABLED = process.env.LIVE_SCANNER_LOG !== '0' && process.env.LIVE_SCANNER_LOG !== 'false';
@@ -302,6 +321,16 @@ function loadPrevDayTailBars(symbol, prevInfo, nBars = 25) {
 
 async function main() {
   logToFile('start', 'script started');
+
+  // Startup summary
+  console.error(`[CONFIG] LIVE_TRADING=${LIVE_TRADING} | MAX_POSITIONS=${MAX_POSITIONS} | LIVE_TIERED_SIZING=${LIVE_TIERED_SIZING}`);
+  if (LIVE_TIERED_SIZING) {
+    const tierStr = LIVE_TIERS.map((v, i) => `#${i + 1}:₹${v.toLocaleString('en-IN')}`).join(' | ');
+    const totalCapital = LIVE_TIERS.reduce((s, v) => s + v, 0);
+    console.error(`[CONFIG] Tiers (${LIVE_CAPITAL > 0 ? `auto from ₹${LIVE_CAPITAL.toLocaleString('en-IN')} capital` : 'explicit'}): ${tierStr}`);
+    console.error(`[CONFIG] Total if all ${LIVE_TIERS.length} fire: ₹${totalCapital.toLocaleString('en-IN')}`);
+  }
+
   const symbols = loadWatchlistSymbols();
   if (symbols.length === 0) {
     console.error('No symbols in', WATCHLIST_PATH);
@@ -470,6 +499,7 @@ async function main() {
   let lastHeartbeat = 0;
   let tickCount = 0;
   let volumeDebugCumulative = 0;
+  let dailyTradeCount = 0;  // incremented after each confirmed entry; used for tiered sizing
   let volumeDebugSum = 0;
   let volumeCheckLoopBusy = false;
 
@@ -611,6 +641,10 @@ async function main() {
           const slPct = entryPrice > 0 ? ((entryPrice - stop) / entryPrice * 100).toFixed(2) : '?';
           const qty = Math.floor(POSITION_VALUE / entryPrice);
 
+          const tierPv = LIVE_TIERED_SIZING
+            ? LIVE_TIERS[Math.min(dailyTradeCount, LIVE_TIERS.length - 1)]
+            : undefined;
+
           const pos = addPosition({
             symbol: pending.symbol,
             side: 'long',
@@ -619,9 +653,12 @@ async function main() {
             stop,
             target: firstTargetPrice,
             signalType: 'v2_breakout',
+            ...(tierPv !== undefined && { positionValue: tierPv }),
           });
 
-          const msg = `[ENTRY] ${pending.symbol} #${pos.id} @ ${pending.time} | entry=${entryPrice} SL=${stop} (${slPct}%) 3%→trail | qty=${qty} | cumVol=${official.cumVol} | entryBarVol=${official.entryBar.volume} | volume=historical_api`;
+          dailyTradeCount++;
+
+          const msg = `[ENTRY] ${pending.symbol} #${pos.id} @ ${pending.time} | entry=${entryPrice} SL=${stop} (${slPct}%) 3%→trail | qty=${pos.qty}${LIVE_TIERED_SIZING ? ` | tier=${tierPv}` : ''} | cumVol=${official.cumVol} | entryBarVol=${official.entryBar.volume} | volume=historical_api`;
           console.error(msg);
           logToFile('entry', {
             symbol: pending.symbol,

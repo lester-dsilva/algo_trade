@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import * as api from '../api';
 
+const DEFAULT_TIERS = [75000, 60000, 50000, 45000, 40000, 30000];
+
 // Default baseline config (match v2/entryLogic.js and v2/scripts/runBacktest.js)
 const BASELINE_CONFIG_DEFAULTS = {
   dayVolMult: 2.7,
@@ -39,6 +41,8 @@ export default function Home() {
   const [customMonth, setCustomMonth] = useState('');
   const [showBaselineConfigModal, setShowBaselineConfigModal] = useState(false);
   const [baselineConfig, setBaselineConfig] = useState(() => ({ ...BASELINE_CONFIG_DEFAULTS }));
+  const [tieredMode, setTieredMode] = useState(false);
+  const [tierAmounts, setTierAmounts] = useState([...DEFAULT_TIERS]);
 
   useEffect(() => {
     api.getMonths().then((d) => {
@@ -112,12 +116,18 @@ export default function Home() {
 
   const openBaselineConfigModal = () => {
     setBaselineConfig({ ...BASELINE_CONFIG_DEFAULTS });
+    setTieredMode(false);
+    setTierAmounts([...DEFAULT_TIERS]);
     setShowBaselineConfigModal(true);
   };
 
   const handleRunAllSaveBaseline = (nameOverride, configOverride) => {
     const name = ((nameOverride ?? baselineName) || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline';
-    const config = configOverride ?? baselineConfig;
+    let config = configOverride ?? baselineConfig;
+    if (!configOverride && tieredMode) {
+      const { capitalPerTrade: _drop, ...rest } = config;
+      config = { ...rest, tiers: tierAmounts };
+    }
     setShowBaselineConfigModal(false);
     setBaselineLoading(true);
     setError('');
@@ -283,14 +293,51 @@ export default function Home() {
                 <label><span className="muted">Max entry time</span><input type="text" value={baselineConfig.maxEntryTime} onChange={(e) => setConfigValue('maxEntryTime', e.target.value)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label><span className="muted">Fixed SL %</span><input type="number" step="0.1" value={baselineConfig.fixedSlPct} onChange={(e) => setConfigValue('fixedSlPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Sizing</label>
-                <label style={{ gridColumn: '1 / -1' }}><span className="muted">Capital per trade (₹)</span><input type="number" step="1000" min="1000" value={baselineConfig.capitalPerTrade} onChange={(e) => setConfigValue('capitalPerTrade', Math.max(1000, parseFloat(e.target.value) || 50000))} style={{ width: 100, marginLeft: 4 }} /><span className="muted" style={{ marginLeft: 8, fontSize: '0.85rem' }}>Default ₹50k · day capital = 6× this · max 6 trades</span></label>
+                <label style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input type="checkbox" checked={tieredMode} onChange={(e) => setTieredMode(e.target.checked)} />
+                  <span>Tiered sizing (different capital per trade sequence)</span>
+                </label>
+                {!tieredMode && (
+                  <label style={{ gridColumn: '1 / -1' }}>
+                    <span className="muted">Capital per trade (₹)</span>
+                    <input type="number" step="1000" min="1000" value={baselineConfig.capitalPerTrade} onChange={(e) => setConfigValue('capitalPerTrade', Math.max(1000, parseFloat(e.target.value) || 50000))} style={{ width: 100, marginLeft: 4 }} />
+                    <span className="muted" style={{ marginLeft: 8, fontSize: '0.85rem' }}>Default ₹50k · max 6 trades/day</span>
+                  </label>
+                )}
+                {tieredMode && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <p className="muted" style={{ fontSize: '0.85rem', marginBottom: '0.4rem' }}>Capital per trade by sequence (1st trade of day → 6th). Later trades get less.</p>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                      {tierAmounts.map((amt, i) => (
+                        <label key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem', fontSize: '0.85rem' }}>
+                          <span className="muted">{['1st','2nd','3rd','4th','5th','6th'][i]}</span>
+                          <input
+                            type="number"
+                            step="5000"
+                            min="1000"
+                            value={amt}
+                            onChange={(e) => {
+                              const next = [...tierAmounts];
+                              next[i] = Math.max(1000, parseFloat(e.target.value) || 1000);
+                              setTierAmounts(next);
+                            }}
+                            style={{ width: 80 }}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <p className="muted" style={{ fontSize: '0.8rem', marginTop: '0.4rem' }}>
+                      Total if all 6 fire: ₹{tierAmounts.reduce((s, v) => s + v, 0).toLocaleString('en-IN')}
+                    </p>
+                  </div>
+                )}
                 <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Exit</label>
                 <label><span className="muted">First target %</span><input type="number" step="0.5" value={baselineConfig.firstTargetPct} onChange={(e) => setConfigValue('firstTargetPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label><span className="muted">Trail %</span><input type="number" step="0.1" value={baselineConfig.trailPct} onChange={(e) => setConfigValue('trailPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
               </div>
               <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                 <button type="button" onClick={() => setShowBaselineConfigModal(false)}>Cancel</button>
-                <button type="button" onClick={() => handleRunAllSaveBaseline((baselineName || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline', baselineConfig)}>Run & save baseline</button>
+                <button type="button" onClick={() => handleRunAllSaveBaseline((baselineName || 'baseline').trim().replace(/[^a-zA-Z0-9_]/g, '_') || 'baseline')}>Run & save baseline</button>
               </div>
             </div>
           </div>
