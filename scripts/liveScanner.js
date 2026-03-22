@@ -3,7 +3,7 @@
  * build 3m candles from Kite ticks, run v2 entry logic on each new bar, persist paper positions, send Telegram alerts.
  *
  * v2 logic: 4% move in first 45 min, pullback/consolidation, breakout (2.7x day vol, 2x breakout vol, gap ≤2%, wicks ≤35%).
- * Exits: fixed SL 1% below entry (v2 entryLogic); 3% first target then 1.5% trail; EOD 15:24. Position size ₹50,000.
+ * Exits: fixed SL 1% below entry (v2 entryLogic); 3% first target then 1.5% trail; EOD 15:24. Position size ₹20,000 (max 6 concurrent).
  *
  * Usage: node scripts/liveScanner.js
  *
@@ -20,11 +20,15 @@ import { getKite } from '../lib/kite.js';
 import { KiteTicker } from 'kiteconnect';
 import { createCandleBuilder } from '../lib/candleBuilder.js';
 import { findEntry } from '../v2/lib/entryLogic.js';
-import { addPosition, processBar, getTotalPnl, eodSweep, POSITION_VALUE } from '../lib/positionStore.js';
+import { addPosition, processBar, getTotalPnl, eodSweep, getOpenPositions, POSITION_VALUE } from '../lib/positionStore.js';
 import { sendAlert, isConfigured as telegramConfigured } from '../lib/telegram.js';
+import { placeBuyOrder, placeSellOrder } from '../lib/orderExecutor.js';
 
 const WATCHLIST_PATH = path.join(process.cwd(), 'config', 'nse_mcap_above_900cr.csv');
 const MAX_TOKENS = 3000;
+
+const LIVE_TRADING  = process.env.LIVE_TRADING === 'true';
+const MAX_POSITIONS = parseInt(process.env.MAX_POSITIONS || '6', 10);
 
 /** File log for debugging when away during market hours. Logs to data/live_scanner.log by default. Set LIVE_SCANNER_LOG=0 to disable, or LOG_PATH for custom path. */
 const LOG_ENABLED = process.env.LIVE_SCANNER_LOG !== '0' && process.env.LIVE_SCANNER_LOG !== 'false';
@@ -593,6 +597,14 @@ async function main() {
           signaled.add(key);
           pendingVolumeChecks.delete(key);
 
+          // max-positions guard — skip if already at the cap
+          const openCount = getOpenPositions().length;
+          if (openCount >= MAX_POSITIONS) {
+            console.error(`[ENTRY_SKIP] ${pending.symbol} @ ${pending.time} | max positions reached (${openCount}/${MAX_POSITIONS})`);
+            logToFile('entry_skipped_max_positions', { symbol: pending.symbol, date: pending.date, time: pending.time, openCount, MAX_POSITIONS });
+            continue;
+          }
+
           const entryPrice = officialResult.entry;
           const stop = officialResult.stop;
           const firstTargetPrice = Math.round(entryPrice * 1.03 * 100) / 100;
@@ -643,6 +655,10 @@ async function main() {
             `Buy Value: ₹${buyVal.toLocaleString('en-IN')}`,
             '3% → trail',
           ].join('\n'));
+
+          if (LIVE_TRADING) {
+            await placeBuyOrder(kite, pending.symbol, pos.qty, logToFile, sendAlert);
+          }
         } catch (e) {
           if (pending.attempts === 1 || pending.attempts % 6 === 0) {
             const reason = e?.message ?? String(e);
@@ -667,7 +683,7 @@ async function main() {
   const eodSweepAt = new Date(`${todayISTForEod}T15:30:00+05:30`);
   const msToEod = eodSweepAt.getTime() - Date.now();
   if (msToEod > 0) {
-    setTimeout(() => {
+    setTimeout(async () => {
       const swept = eodSweep(todayISTForEod);
       if (swept.length > 0) {
         console.error(`[EOD_SWEEP] Force-closed ${swept.length} positions that had no 15:24 bar`);
@@ -685,6 +701,9 @@ async function main() {
             `Sell Value: ₹${sellValSweep.toLocaleString('en-IN')}`,
             `P&L: ${pnlStr(p.pnl)}`,
           ].join('\n'));
+          if (LIVE_TRADING) {
+            await placeSellOrder(kite, p.symbol, p.qty, logToFile, sendAlert);
+          }
         }
         logSummary('EOD_SWEEP');
       }
@@ -693,7 +712,7 @@ async function main() {
 
   // ── bar-close callback ─────────────────────────────────────────────────────
   const builder = createCandleBuilder(
-    (bar) => {
+    async (bar) => {
     const { symbol, date, time, open, high, low, close, volume } = bar;
     barsClosedCount++;
 
@@ -745,6 +764,9 @@ async function main() {
             `Sell Value: ₹${sellValSl.toLocaleString('en-IN')}`,
             `P&L: ${pnlStr(r.pnl)}`,
           ].join('\n'));
+          if (LIVE_TRADING) {
+            await placeSellOrder(kite, symbol, r.qty, logToFile, sendAlert);
+          }
           break;
         }
         case 'exit_trail': {
@@ -763,6 +785,9 @@ async function main() {
             `Sell Value: ₹${sellValTrail.toLocaleString('en-IN')}`,
             `P&L: ${pnlStr(r.pnl)}`,
           ].join('\n'));
+          if (LIVE_TRADING) {
+            await placeSellOrder(kite, symbol, r.qty, logToFile, sendAlert);
+          }
           break;
         }
         case 'exit_eod': {
@@ -781,6 +806,9 @@ async function main() {
             `Sell Value: ₹${sellValEod.toLocaleString('en-IN')}`,
             `P&L: ${pnlStr(r.pnl)}`,
           ].join('\n'));
+          if (LIVE_TRADING) {
+            await placeSellOrder(kite, symbol, r.qty, logToFile, sendAlert);
+          }
           break;
         }
         case 'first_target_hit': {
