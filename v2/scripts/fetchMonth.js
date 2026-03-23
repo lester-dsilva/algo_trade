@@ -59,17 +59,17 @@ function hasDataAlready(dateStr) {
 
 function runFetch(dateStr) {
   return new Promise((resolve, reject) => {
+    // Use inherit so you see live batch progress (otherwise it looks "stuck" for many minutes).
+    // With concurrency >1, two children' logs may interleave — use --concurrency 1 for clean output.
+    console.error(`[START] ${dateStr}`);
     const child = spawn(process.execPath, [path.join(ROOT, 'v2', 'scripts', 'fetchBacktestData.js'), dateStr], {
       cwd: ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: 'inherit',
+      shell: false,
     });
-    let stderr = '';
-    let stdout = '';
-    child.stderr?.on('data', (c) => { stderr += c.toString(); });
-    child.stdout?.on('data', (c) => { stdout += c.toString(); });
     child.on('close', (code) => {
       if (code === 0) resolve({ dateStr, ok: true });
-      else reject(new Error(`${dateStr} exit ${code}: ${stderr.slice(-500)}`));
+      else reject(new Error(`${dateStr} exit ${code}`));
     });
     child.on('error', reject);
   });

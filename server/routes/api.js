@@ -682,6 +682,8 @@ apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
             exitPrice: t.exitPrice,
             pnl: t.pnl,
             qty: t.qty,
+            strategy: t.strategy || 'v2_breakout',
+            seqIndex: t.seqIndex,
           });
         }
       }

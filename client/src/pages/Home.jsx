@@ -349,7 +349,14 @@ export default function Home() {
         )}
         {baselines.length > 0 && (
           <div style={{ marginTop: '0.75rem' }}>
-            <h3 style={{ fontSize: '1rem', marginBottom: '0.35rem' }}>Saved baselines</h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.35rem' }}>
+              <h3 style={{ fontSize: '1rem', margin: 0 }}>Saved baselines</h3>
+              {baselines.length >= 2 && (
+                <Link to="/compare" style={{ fontSize: '0.85rem', fontWeight: 500 }}>
+                  Compare baselines →
+                </Link>
+              )}
+            </div>
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.9rem' }}>
               {baselines.map((b) => (
                 <li key={b.name} style={{ padding: '0.2rem 0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
