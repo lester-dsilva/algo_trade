@@ -20,6 +20,7 @@
     "kite:ohlc": "node scripts/kiteOHLC.js",
     "pre-market": "node scripts/preMarket.js",
     "fetch3m": "node scripts/fetchPrevDay3m.js",
+    "analyze:otc": "node v2/scripts/analyzeOpenToCloseSurge.js",
     "live": "node scripts/liveScanner.js",
     "positions": "node scripts/positionManager.js"
   },

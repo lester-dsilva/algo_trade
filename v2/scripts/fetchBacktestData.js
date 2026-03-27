@@ -5,6 +5,7 @@
  * Run from repo root:
  *   node v2/scripts/fetchBacktestData.js 2026-03-05
  *   node v2/scripts/fetchBacktestData.js 2026-03-05 --force
+ *   node v2/scripts/fetchBacktestData.js 2026-03-05 --refresh-prev-if-incomplete
  *
  * Previous trading day is derived by probing Kite (D-1, D-2, ... until a day with data); holidays are handled automatically.
  *
@@ -13,28 +14,56 @@
  *   v2/data/YYYY-MM-DD/3m/<symbol>.csv     — date,time,open,high,low,close,volume (that day)
  *
  * Full universe = config/nse_mcap_above_900cr.csv (same as live scanner).
+ *
+ * Env:
+ *   V2_KITE_HISTORICAL_RPS — max historical API call *starts* per second (default 3).
  */
 
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { getKite } from '../../lib/kite.js';
+import {
+  ROOT,
+  V2_DATA_DIR,
+  WATCHLIST_PATH,
+  loadWatchlistSymbols,
+  normalizeFilename,
+  findToken,
+} from '../lib/v2Universe.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '../..');
-const WATCHLIST_PATH = path.join(ROOT, 'config', 'nse_mcap_above_900cr.csv');
-const DATA_DIR = path.join(ROOT, 'v2', 'data');
+const DATA_DIR = V2_DATA_DIR;
 const CACHE_DIR = path.join(ROOT, 'data', '.cache');
 
-const CONCURRENCY = 8;   // symbols per batch (higher = faster; reduce if Kite rate-limits)
-const BATCH_DELAY_MS = 500; // ms between batches (increase if you see rate limit errors)
+const CONCURRENCY = 8; // parallel tasks; actual starts are spaced by historical RPS limiter
+const BATCH_DELAY_MS = 0; // optional extra gap between batches (0 when using RPS limiter)
 const RETRY_ATTEMPTS = 3;
 const RETRY_BASE_MS = 2000;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+/** Spaces when each historical request *starts* (calls can overlap). Default 3/sec via V2_KITE_HISTORICAL_RPS. */
+export function createStartRateLimiter(callsPerSecond) {
+  const gapMs = 1000 / Math.max(0.01, callsPerSecond);
+  let slotChain = Promise.resolve();
+  let nextStartTime = 0;
+  return function histRun(fn) {
+    const slotWait = slotChain.then(async () => {
+      const now = Date.now();
+      const wait = Math.max(0, nextStartTime - now);
+      if (wait > 0) await sleep(wait);
+      nextStartTime = Date.now() + gapMs;
+    });
+    slotChain = slotWait.catch(() => {});
+    return slotWait.then(() => fn());
+  };
+}
+
+const histRunNoLimit = (fn) => fn();
 
 function log(msg) {
   const ts = new Date().toISOString().slice(11, 19);
@@ -59,44 +88,18 @@ function prevTradingDayFallback(dateStr) {
 }
 
 /** Derive previous trading day by probing Kite: try D-1, D-2, ... until we get a day with data (handles holidays). */
-async function getPrevTradingDayViaKite(kite, token, backtestDate) {
+async function getPrevTradingDayViaKite(kite, token, backtestDate, histRun = histRunNoLimit) {
   const MAX_DAYS_BACK = 15;
   for (let n = 1; n <= MAX_DAYS_BACK; n++) {
     const candidate = dateMinusDays(backtestDate, n);
     try {
-      const bar = await fetchDailyBar(kite, token, candidate);
+      const bar = await fetchDailyBar(kite, token, candidate, histRun);
       if (bar && bar.date === candidate) {
         return candidate;
       }
     } catch (_) {}
   }
   return prevTradingDayFallback(backtestDate);
-}
-
-function normalizeFilename(symbol) {
-  return symbol.toLowerCase().replace(/&/g, '').replace(/\s/g, '');
-}
-
-function loadWatchlistSymbols() {
-  const raw = fs.readFileSync(WATCHLIST_PATH, 'utf8').replace(/\r\n/g, '\n').trim();
-  const lines = raw.split('\n');
-  if (lines.length < 2) return [];
-  const symbols = [];
-  for (let i = 1; i < lines.length; i++) {
-    const sym = (lines[i].split(',')[0] || '').trim();
-    if (sym) symbols.push(sym);
-  }
-  return symbols;
-}
-
-function findToken(instruments, tradingsymbol) {
-  const sym = tradingsymbol.includes(':') ? tradingsymbol.split(':')[1] : tradingsymbol;
-  const nse = instruments.filter((i) => i.exchange === 'NSE');
-  return (
-    nse.find((i) => i.tradingsymbol === sym) ||
-    nse.find((i) => i.tradingsymbol === sym + '-EQ') ||
-    nse.find((i) => i.tradingsymbol === sym + '-BE')
-  )?.instrument_token ?? null;
 }
 
 function toISTDateAndTime(d) {
@@ -191,13 +194,15 @@ async function getInstruments(kite) {
   return data;
 }
 
-async function fetchDailyBar(kite, token, dateStr) {
+async function fetchDailyBar(kite, token, dateStr, histRun = histRunNoLimit) {
   const rangeFrom = new Date(`${dateStr}T00:00:00+05:30`);
   const rangeTo = new Date(`${dateStr}T23:59:59+05:30`);
   let delay = RETRY_BASE_MS;
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     try {
-      const candles = await kite.getHistoricalData(token, 'day', rangeFrom, rangeTo, false, false);
+      const candles = await histRun(() =>
+        kite.getHistoricalData(token, 'day', rangeFrom, rangeTo, false, false)
+      );
       if (!candles || candles.length === 0) return null;
       const c = candles.find((x) => {
         const { date } = toISTDateAndTime(x.date instanceof Date ? x.date : new Date(x.date));
@@ -223,13 +228,15 @@ async function fetchDailyBar(kite, token, dateStr) {
   return null;
 }
 
-async function fetch3mBars(kite, token, dateStr) {
+async function fetch3mBars(kite, token, dateStr, histRun = histRunNoLimit) {
   const from = `${dateStr} 09:15:00`;
   const to = `${dateStr} 15:30:00`;
   let delay = RETRY_BASE_MS;
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     try {
-      const candles = await kite.getHistoricalData(token, '3minute', from, to, false, false);
+      const candles = await histRun(() =>
+        kite.getHistoricalData(token, '3minute', from, to, false, false)
+      );
       const rows = (candles || []).map((c) => {
         const dt = c.date instanceof Date ? c.date : new Date(c.date);
         const { date, time } = toISTDateAndTime(dt);
@@ -279,15 +286,20 @@ function write3mCsv(dateDir, symbol, dateStr, rows) {
   return file;
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const force = args.includes('--force');
-  const dateArg = args.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
-  if (!dateArg) {
-    console.error('Usage: node v2/scripts/fetchBacktestData.js YYYY-MM-DD [--force]');
-    process.exit(1);
-  }
-  const backtestDate = dateArg;
+function countPrevCsvRows(prevDayPath) {
+  if (!fs.existsSync(prevDayPath)) return 0;
+  const lines = fs.readFileSync(prevDayPath, 'utf8').replace(/\r\n/g, '\n').trim().split('\n');
+  return Math.max(0, lines.length - 1);
+}
+
+/**
+ * @param {string} backtestDate - YYYY-MM-DD
+ * @param [options] Optional histRun from fillV2DataGaps keeps one rate limit across many dates.
+ *        If kite + instruments are passed, skips connect (for batch gap-fill).
+ */
+export async function fetchBacktestDataForDate(backtestDate, options = {}) {
+  const force = Boolean(options.force);
+  const refreshPrevIfIncomplete = Boolean(options.refreshPrevIfIncomplete);
   const dateDir = path.join(DATA_DIR, backtestDate);
 
   log(`fetchBacktestData — backtest date: ${backtestDate}${force ? ' --force' : ''}`);
@@ -298,17 +310,20 @@ async function main() {
   const symbols = loadWatchlistSymbols();
   if (symbols.length === 0) {
     log('No symbols in full universe. Exiting.');
-    process.exit(1);
+    throw new Error('empty universe');
   }
   log(`Full universe: ${symbols.length} symbols`);
 
-  log('Connecting to Kite...');
-  const kite = await getKite();
-  log('Kite connected.');
-
-  log('Loading instruments...');
-  const instruments = await getInstruments(kite);
-  log('Instruments loaded.');
+  let kite = options.kite;
+  let instruments = options.instruments;
+  if (!kite || !instruments) {
+    log('Connecting to Kite...');
+    kite = await getKite();
+    log('Kite connected.');
+    log('Loading instruments...');
+    instruments = await getInstruments(kite);
+    log('Instruments loaded.');
+  }
 
   const symbolTokens = [];
   for (const sym of symbols) {
@@ -317,14 +332,33 @@ async function main() {
   }
   log(`Resolved: ${symbolTokens.length} tokens`);
 
+  const rps = Number(process.env.V2_KITE_HISTORICAL_RPS);
+  const historicalRps = Number.isFinite(rps) && rps > 0 ? rps : 3;
+  const histRun =
+    typeof options.histRun === 'function' ? options.histRun : createStartRateLimiter(historicalRps);
+  if (typeof options.histRun !== 'function') {
+    log(`Historical API rate limit: ${historicalRps} calls/sec (set V2_KITE_HISTORICAL_RPS to change)`);
+  }
+
   log('Deriving previous trading day via Kite (D-1, D-2, ... until data found)...');
-  const prevDate = await getPrevTradingDayViaKite(kite, symbolTokens[0].token, backtestDate);
+  const prevDate = await getPrevTradingDayViaKite(kite, symbolTokens[0].token, backtestDate, histRun);
   log(`Previous trading day: ${prevDate}`);
   log('');
 
   // ─── 1. Previous day OHLC ───────────────────────────────────────────────────
   const prevDayPath = path.join(dateDir, 'prev_day_ohlc.csv');
-  if (!force && fs.existsSync(prevDayPath)) {
+  const prevRowsExisting = countPrevCsvRows(prevDayPath);
+  const prevLooksIncomplete =
+    refreshPrevIfIncomplete &&
+    fs.existsSync(prevDayPath) &&
+    symbolTokens.length > 0 &&
+    prevRowsExisting < Math.floor(symbolTokens.length * 0.92);
+
+  let skipPrev = !force && fs.existsSync(prevDayPath) && !prevLooksIncomplete;
+  if (prevLooksIncomplete) {
+    log(`Phase 1/2: prev_day_ohlc.csv looks incomplete (${prevRowsExisting}/${symbolTokens.length} rows) — re-fetching`);
+  }
+  if (skipPrev) {
     log('Phase 1/2: prev_day_ohlc.csv already exists — skipping (use --force to re-fetch)');
   } else {
     const totalBatchesPrev = Math.ceil(symbolTokens.length / CONCURRENCY);
@@ -340,7 +374,7 @@ async function main() {
       await Promise.all(
         batch.map(async ({ symbol, token }) => {
           try {
-            const bar = await fetchDailyBar(kite, token, prevDate);
+            const bar = await fetchDailyBar(kite, token, prevDate, histRun);
             if (bar)
               prevRows.push({
                 symbol,
@@ -395,7 +429,7 @@ async function main() {
       await Promise.all(
         batch.map(async ({ symbol, token }) => {
           try {
-            const rows = await fetch3mBars(kite, token, backtestDate);
+            const rows = await fetch3mBars(kite, token, backtestDate, histRun);
             if (!rows || rows.length === 0) {
               skipped++;
               return;
@@ -429,7 +463,26 @@ async function main() {
   log('Done.');
 }
 
-main().catch((err) => {
-  console.error('\nFatal:', err?.message ?? String(err));
-  process.exit(1);
-});
+async function main() {
+  const args = process.argv.slice(2);
+  const force = args.includes('--force');
+  const refreshPrevIfIncomplete = args.includes('--refresh-prev-if-incomplete');
+  const dateArg = args.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
+  if (!dateArg) {
+    console.error(
+      'Usage: node v2/scripts/fetchBacktestData.js YYYY-MM-DD [--force] [--refresh-prev-if-incomplete]'
+    );
+    process.exit(1);
+  }
+  await fetchBacktestDataForDate(dateArg, { force, refreshPrevIfIncomplete });
+}
+
+const isCli =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isCli) {
+  main().catch((err) => {
+    console.error('\nFatal:', err?.message ?? String(err));
+    process.exit(1);
+  });
+}

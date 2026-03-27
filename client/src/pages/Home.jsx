@@ -253,8 +253,52 @@ export default function Home() {
       {loadStatus?.running && (
         <p className="muted">Fetching data for {loadStatus.month}… (refresh status automatically)</p>
       )}
+      {loadStatus?.logLines?.length > 0 && (
+        <details className="card" style={{ marginTop: '0.75rem' }} open={!!loadStatus?.running}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+            Load month log{loadStatus.month ? ` (${loadStatus.month})` : ''}
+            {loadStatus.finished && loadStatus.code != null && ` — exit ${loadStatus.code}`}
+          </summary>
+          <pre
+            className="muted"
+            style={{
+              marginTop: '0.5rem',
+              maxHeight: 220,
+              overflow: 'auto',
+              fontSize: '0.75rem',
+              lineHeight: 1.35,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {loadStatus.logLines.slice(-80).join('\n')}
+          </pre>
+        </details>
+      )}
       {loadDateStatus?.running && (
-        <p className="muted">Fetching data for {loadDateStatus.date}…</p>
+        <p className="muted">Fetching data for {loadDateStatus.date}… (logs below update every ~2s)</p>
+      )}
+      {loadDateStatus?.logLines?.length > 0 && (
+        <details className="card" style={{ marginTop: '0.75rem' }} open={!!loadDateStatus?.running}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+            Load one day log{loadDateStatus.date ? ` (${loadDateStatus.date})` : ''}
+            {loadDateStatus.finished && loadDateStatus.code != null && ` — exit ${loadDateStatus.code}`}
+          </summary>
+          <pre
+            className="muted"
+            style={{
+              marginTop: '0.5rem',
+              maxHeight: 220,
+              overflow: 'auto',
+              fontSize: '0.75rem',
+              lineHeight: 1.35,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+            }}
+          >
+            {loadDateStatus.logLines.slice(-80).join('\n')}
+          </pre>
+        </details>
       )}
 
       <section className="card">

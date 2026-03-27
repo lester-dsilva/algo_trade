@@ -84,10 +84,47 @@ const TOTAL_CAPITAL = 300000;       // ₹3 lakh
 const CAPITAL_PER_TRADE = 50000;   // ₹50k deployed per trade
 const FALLBACK_CHARGES_PER_TRADE = 55;  // when trade-level data missing
 
-// In-memory load-month job status
-let loadMonthStatus = { running: false, month: null, startedAt: null };
+// In-memory load-month job status (logLines retained after job ends until next job)
+let loadMonthStatus = { running: false, month: null, startedAt: null, logLines: [] };
 // In-memory load-date (single day) job status
-let loadDateStatus = { running: false, date: null, startedAt: null };
+let loadDateStatus = { running: false, date: null, startedAt: null, logLines: [] }; // logLines: live + last run
+
+const MAX_SPAWN_LOG_LINES = 250;
+
+/**
+ * Read piped stdout/stderr so the child never blocks on full buffers; mirror to server console + status.logLines.
+ * Call the returned flush() once in the child "close" handler before copying status (avoids racing a stale status ref).
+ */
+function wireSpawnLogs(child, statusObj, label) {
+  const partial = { out: '', err: '' };
+  const pushLine = (line) => {
+    if (!line) return;
+    console.error(`[${label}] ${line}`);
+    if (!statusObj.logLines) statusObj.logLines = [];
+    statusObj.logLines.push(line);
+    if (statusObj.logLines.length > MAX_SPAWN_LOG_LINES) {
+      statusObj.logLines.splice(0, statusObj.logLines.length - MAX_SPAWN_LOG_LINES);
+    }
+  };
+  const pushCompleteLines = (bufKey, text) => {
+    partial[bufKey] += text;
+    const parts = partial[bufKey].split(/\r?\n/);
+    partial[bufKey] = parts.pop() ?? '';
+    for (const raw of parts) {
+      const line = raw.replace(/\r$/, '').trimEnd();
+      if (line) pushLine(line);
+    }
+  };
+  child.stdout?.on('data', (c) => pushCompleteLines('out', c.toString()));
+  child.stderr?.on('data', (c) => pushCompleteLines('err', c.toString()));
+  return function flushSpawnLogBuffers() {
+    for (const bufKey of ['out', 'err']) {
+      const rest = (partial[bufKey] || '').trim();
+      partial[bufKey] = '';
+      if (rest) pushLine(rest);
+    }
+  };
+}
 
 function getDatesWithData(monthFilter) {
   if (!fs.existsSync(DATA_DIR)) return [];
@@ -246,17 +283,36 @@ apiRouter.post('/load-month', (req, res) => {
   if (loadMonthStatus.running) {
     return res.status(409).json({ error: 'Load already in progress', status: loadMonthStatus });
   }
-  loadMonthStatus = { running: true, month, startedAt: new Date().toISOString() };
+  loadMonthStatus = { running: true, month, startedAt: new Date().toISOString(), logLines: [] };
   const child = spawn('node', ['v2/scripts/fetchMonth.js', month, '--concurrency', '4'], {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: true,
   });
+  const flushLoadMonthLogs = wireSpawnLogs(child, loadMonthStatus, `load-month ${month}`);
   child.on('close', (code) => {
-    loadMonthStatus = { running: false, month: loadMonthStatus.month, startedAt: loadMonthStatus.startedAt, finished: true, code };
+    flushLoadMonthLogs();
+    const prev = loadMonthStatus;
+    const logLines = [...(prev.logLines || []), `Finished with exit code ${code}`];
+    loadMonthStatus = {
+      running: false,
+      month: prev.month,
+      startedAt: prev.startedAt,
+      finished: true,
+      code,
+      logLines,
+    };
   });
-  child.on('error', () => {
-    loadMonthStatus = { running: false, month: loadMonthStatus.month, startedAt: loadMonthStatus.startedAt, error: true };
+  child.on('error', (err) => {
+    const prev = loadMonthStatus;
+    loadMonthStatus = {
+      running: false,
+      month: prev.month,
+      startedAt: prev.startedAt,
+      error: true,
+      message: err?.message,
+      logLines: [...(prev.logLines || []), `Spawn error: ${err?.message || err}`],
+    };
   });
   res.status(202).json({ status: 'started', month });
 });
@@ -278,17 +334,43 @@ apiRouter.post('/load-date', (req, res) => {
   if (loadMonthStatus.running) {
     return res.status(409).json({ error: 'Load month in progress; wait for it to finish' });
   }
-  loadDateStatus = { running: true, date, startedAt: new Date().toISOString() };
+  // Dashboard single-day fetch: faster default RPS than bulk CLI (override with LOAD_DATE_HISTORICAL_RPS or V2_KITE_HISTORICAL_RPS).
+  const loadDateRps =
+    process.env.LOAD_DATE_HISTORICAL_RPS ||
+    process.env.V2_KITE_HISTORICAL_RPS ||
+    '5';
+
+  loadDateStatus = { running: true, date, startedAt: new Date().toISOString(), logLines: [] };
   const child = spawn('node', ['v2/scripts/fetchBacktestData.js', date], {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: true,
+    env: { ...process.env, V2_KITE_HISTORICAL_RPS: String(loadDateRps) },
   });
+  const flushLoadDateLogs = wireSpawnLogs(child, loadDateStatus, `load-date ${date}`);
   child.on('close', (code) => {
-    loadDateStatus = { running: false, date: loadDateStatus.date, startedAt: loadDateStatus.startedAt, finished: true, code };
+    flushLoadDateLogs();
+    const prev = loadDateStatus;
+    const logLines = [...(prev.logLines || []), `Finished with exit code ${code}`];
+    loadDateStatus = {
+      running: false,
+      date: prev.date,
+      startedAt: prev.startedAt,
+      finished: true,
+      code,
+      logLines,
+    };
   });
-  child.on('error', () => {
-    loadDateStatus = { running: false, date: loadDateStatus.date, startedAt: loadDateStatus.startedAt, error: true };
+  child.on('error', (err) => {
+    const prev = loadDateStatus;
+    loadDateStatus = {
+      running: false,
+      date: prev.date,
+      startedAt: prev.startedAt,
+      error: true,
+      message: err?.message,
+      logLines: [...(prev.logLines || []), `Spawn error: ${err?.message || err}`],
+    };
   });
   res.status(202).json({ status: 'started', date });
 });
