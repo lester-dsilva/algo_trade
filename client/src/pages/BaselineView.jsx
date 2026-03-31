@@ -139,6 +139,11 @@ export default function BaselineView() {
       {baseline.savedAt && (
         <p className="muted">Saved at {new Date(baseline.savedAt).toLocaleString()}</p>
       )}
+      {baseline.dateRange && (baseline.dateRange.from || baseline.dateRange.to) && (
+        <p className="muted">
+          Backtest date range: {baseline.dateRange.from || 'start'} → {baseline.dateRange.to || 'end'} (only days with v2 data)
+        </p>
+      )}
       <p>
         <strong>Trades:</strong> {baseline.totalTrades}
         {' · '}

@@ -80,6 +80,18 @@ function writeBacktestCache(month, data) {
     console.error('writeBacktestCache:', err.message);
   }
 }
+
+/** Remove cached month JSON so Month view cannot show a previous baseline after a partial (or new) run. */
+function clearBacktestCacheDir() {
+  try {
+    if (!fs.existsSync(BACKTEST_CACHE_DIR)) return;
+    for (const f of fs.readdirSync(BACKTEST_CACHE_DIR)) {
+      if (f.endsWith('.json')) fs.unlinkSync(path.join(BACKTEST_CACHE_DIR, f));
+    }
+  } catch (err) {
+    console.error('clearBacktestCacheDir:', err.message);
+  }
+}
 const TOTAL_CAPITAL = 300000;       // ₹3 lakh
 const CAPITAL_PER_TRADE = 50000;   // ₹50k deployed per trade
 const FALLBACK_CHARGES_PER_TRADE = 55;  // when trade-level data missing
@@ -727,23 +739,50 @@ apiRouter.get('/baselines', (req, res) => {
 });
 
 // POST /api/backtest-all-save-baseline — run backtest for all dates in parallel, save baseline by name
-// Body: { name: string, config?: object } — config overrides (dayVolMult, firstTargetPct, trailPct, capitalPerTrade ₹, etc.)
+// Body: { name, config?, dateFrom?, dateTo? } — dateFrom/dateTo = YYYY-MM-DD inclusive filter on folders that have data
 apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
   const name = sanitizeBaselineName(req.body?.name);
   if (!name) {
     return res.status(400).json({ error: 'Body { name: "baseline_name" } required (alphanumeric + underscore)' });
   }
   const config = req.body?.config && typeof req.body.config === 'object' ? req.body.config : {};
+  const dateFromRaw = req.body?.dateFrom;
+  const dateToRaw = req.body?.dateTo;
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  let dateFrom = typeof dateFromRaw === 'string' && dateRe.test(dateFromRaw) ? dateFromRaw : null;
+  let dateTo = typeof dateToRaw === 'string' && dateRe.test(dateToRaw) ? dateToRaw : null;
+  if ((dateFromRaw && !dateFrom) || (dateToRaw && !dateTo)) {
+    return res.status(400).json({ error: 'dateFrom and dateTo must be YYYY-MM-DD when provided' });
+  }
+  if (dateFrom && dateTo && dateFrom > dateTo) {
+    return res.status(400).json({ error: 'dateFrom must be on or before dateTo' });
+  }
   try {
-    const dates = getDatesWithData(null);
+    let dates = getDatesWithData(null);
     if (dates.length === 0) {
       return res.status(404).json({ error: 'No backtest data in v2/data. Load data first.' });
     }
+    const datesBeforeFilter = dates.length;
+    if (dateFrom) dates = dates.filter((d) => d >= dateFrom);
+    if (dateTo) dates = dates.filter((d) => d <= dateTo);
+    if (dates.length === 0) {
+      return res.status(400).json({
+        error: 'No backtest dates in v2/data fall in the requested range (check data load + holidays).',
+        datesAvailable: datesBeforeFilter,
+        dateFrom,
+        dateTo,
+      });
+    }
     const allResults = await runBacktestAllParallel(dates, config);
+    const filteredResults = allResults.filter((r) => {
+      if (r.error || !r.date) return false;
+      if (dateFrom && r.date < dateFrom) return false;
+      if (dateTo && r.date > dateTo) return false;
+      return true;
+    });
     const byMonth = new Map();
     const allTrades = [];
-    for (const r of allResults) {
-      if (r.error) continue;
+    for (const r of filteredResults) {
       const month = r.date.slice(0, 7);
       if (!byMonth.has(month)) byMonth.set(month, { trades: 0, wins: 0, losses: 0, pnl: 0, dates: 0 });
       const row = byMonth.get(month);
@@ -781,6 +820,7 @@ apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
       savedAt: new Date().toISOString(),
       name,
       config: Object.keys(config).length ? config : undefined,
+      ...(dateFrom || dateTo ? { dateRange: { from: dateFrom, to: dateTo } } : {}),
       totalPnl,
       totalTrades,
       byMonth: byMonthArray,
@@ -792,10 +832,12 @@ apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
     const filePath = path.join(BACKTEST_BASELINES_DIR, `${name}.json`);
     fs.writeFileSync(filePath, JSON.stringify(baseline, null, 2), 'utf8');
 
-    // Keep backtest cache in sync so GET /api/backtest-month and GET /api/trades match this baseline
+    // Month view reads backtest_cache/*.json, not the baseline file. A ranged run only rewrites some months;
+    // without a wipe, untouched months would still show the previous full run’s days.
+    if (dateFrom || dateTo) clearBacktestCacheDir();
+
     const byMonthResults = new Map();
-    for (const r of allResults) {
-      if (r.error) continue;
+    for (const r of filteredResults) {
       const monthKey = r.date.slice(0, 7);
       if (!byMonthResults.has(monthKey)) byMonthResults.set(monthKey, []);
       byMonthResults.get(monthKey).push({
@@ -826,6 +868,7 @@ apiRouter.post('/backtest-all-save-baseline', async (req, res) => {
       totalPnl,
       totalTrades,
       datesRun: dates.length,
+      dateRange: dateFrom || dateTo ? { from: dateFrom, to: dateTo } : null,
       byMonth: byMonthArray,
     });
   } catch (err) {

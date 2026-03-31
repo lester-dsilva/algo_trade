@@ -17,5 +17,43 @@
     "exitPrice": 197.28,
     "pnl": 1075.86,
     "exitReason": "trail_stop"
+  },
+  {
+    "id": 2,
+    "symbol": "GRAPHITE",
+    "side": "long",
+    "entryTime": "2026-03-27 10:30:00",
+    "entryPrice": 656.8,
+    "stop": 650.23,
+    "target": 676.5,
+    "status": "closed",
+    "signalType": "v2_breakout",
+    "qty": 45,
+    "initialStop": 650.23,
+    "highWaterMark": 0,
+    "firstTargetHit": false,
+    "exitTime": "2026-03-27 11:03:00",
+    "exitPrice": 650.23,
+    "pnl": -295.65,
+    "exitReason": "initial_sl"
+  },
+  {
+    "id": 3,
+    "symbol": "CONFIPET",
+    "side": "long",
+    "entryTime": "2026-03-27 10:36:00",
+    "entryPrice": 38,
+    "stop": 37.62,
+    "target": 39.14,
+    "status": "closed",
+    "signalType": "v2_breakout",
+    "qty": 631,
+    "initialStop": 37.62,
+    "highWaterMark": 39.5,
+    "firstTargetHit": true,
+    "exitTime": "2026-03-27 12:21:00",
+    "exitPrice": 38.91,
+    "pnl": 574.21,
+    "exitReason": "trail_stop"
   }
 ]

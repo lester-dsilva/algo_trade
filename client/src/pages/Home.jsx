@@ -43,6 +43,9 @@ export default function Home() {
   const [baselineConfig, setBaselineConfig] = useState(() => ({ ...BASELINE_CONFIG_DEFAULTS }));
   const [tieredMode, setTieredMode] = useState(false);
   const [tierAmounts, setTierAmounts] = useState([...DEFAULT_TIERS]);
+  /** Optional inclusive YYYY-MM-DD filter for baseline run (only dates that already have v2 data). */
+  const [baselineDateFrom, setBaselineDateFrom] = useState('');
+  const [baselineDateTo, setBaselineDateTo] = useState('');
 
   useEffect(() => {
     api.getMonths().then((d) => {
@@ -132,7 +135,10 @@ export default function Home() {
     setBaselineLoading(true);
     setError('');
     setBaselineResult(null);
-    api.runBacktestAllSaveBaseline(name, config).then((data) => {
+    const range = {};
+    if (baselineDateFrom.trim()) range.dateFrom = baselineDateFrom.trim();
+    if (baselineDateTo.trim()) range.dateTo = baselineDateTo.trim();
+    api.runBacktestAllSaveBaseline(name, config, range).then((data) => {
       setBaselineResult(data);
       setBaselineLoading(false);
       api.getBaselines().then((d) => setBaselines(d.baselines || [])).catch(() => {});
@@ -303,7 +309,29 @@ export default function Home() {
 
       <section className="card">
         <h2>Save baseline (all months)</h2>
-        <p className="muted">Run backtest for all available dates in parallel and save a named baseline.</p>
+        <p className="muted">
+          Run backtest for dates that have v2 data (parallel workers). Optional date range below; open config for entry/exit overrides.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+          <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', fontSize: '0.85rem' }}>
+            From (optional)
+            <input
+              type="date"
+              value={baselineDateFrom}
+              onChange={(e) => setBaselineDateFrom(e.target.value)}
+              style={{ padding: '0.35rem 0.5rem' }}
+            />
+          </label>
+          <label className="muted" style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', fontSize: '0.85rem' }}>
+            To (optional)
+            <input
+              type="date"
+              value={baselineDateTo}
+              onChange={(e) => setBaselineDateTo(e.target.value)}
+              style={{ padding: '0.35rem 0.5rem' }}
+            />
+          </label>
+        </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
           <input
             type="text"
@@ -324,6 +352,9 @@ export default function Home() {
           <div className="modal-overlay" onClick={() => setShowBaselineConfigModal(false)}>
             <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
               <h3 style={{ marginTop: 0 }}>Baseline config</h3>
+              <p className="muted" style={{ marginBottom: '0.5rem' }}>
+                Date range uses the <strong>From / To</strong> fields on the card behind this dialog (only dates with loaded v2 data are included).
+              </p>
               <p className="muted" style={{ marginBottom: '1rem' }}>Override values (optional). Saved baseline will use these.</p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem', marginBottom: '1rem' }}>
                 <label style={{ gridColumn: '1 / -1', fontWeight: 600 }}>Entry — volume</label>
@@ -389,6 +420,11 @@ export default function Home() {
         {baselineResult && (
           <div style={{ marginTop: '0.75rem', padding: '0.5rem', background: '#f0f8f0', borderRadius: 4 }}>
             <strong>Saved:</strong> {baselineResult.name} — ₹{baselineResult.totalPnl?.toFixed(2)} ({baselineResult.totalTrades} trades, {baselineResult.datesRun} dates)
+            {baselineResult.dateRange && (baselineResult.dateRange.from || baselineResult.dateRange.to) && (
+              <span className="muted" style={{ display: 'block', marginTop: '0.25rem' }}>
+                Range: {baselineResult.dateRange.from || '…'} → {baselineResult.dateRange.to || '…'}
+              </span>
+            )}
           </div>
         )}
         {baselines.length > 0 && (

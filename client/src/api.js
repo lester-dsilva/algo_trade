@@ -107,12 +107,18 @@ export async function deleteBaseline(name) {
   return handleRes(r);
 }
 
-/** POST run backtest for all available dates in parallel and save baseline by name. config = optional overrides (dayVolMult, firstTargetPct, capitalPerTrade ₹, etc.). */
-export async function runBacktestAllSaveBaseline(name, config = {}) {
+/**
+ * POST run backtest for dates in v2/data (optionally filtered) and save baseline.
+ * @param {{ dateFrom?: string, dateTo?: string }} [range] — YYYY-MM-DD inclusive; omit or leave empty for all dates with data.
+ */
+export async function runBacktestAllSaveBaseline(name, config = {}, range = {}) {
+  const body = { name: name || 'baseline', config };
+  if (range.dateFrom) body.dateFrom = range.dateFrom;
+  if (range.dateTo) body.dateTo = range.dateTo;
   const r = await fetch(`${API}/backtest-all-save-baseline`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name || 'baseline', config }),
+    body: JSON.stringify(body),
   });
   return handleRes(r);
 }
