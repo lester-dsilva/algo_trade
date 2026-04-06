@@ -2,23 +2,24 @@
  * v2 entry logic: 3m breakout after 4% move + pullback/consolidation.
  *
  * Conditions:
- * - 4% move up within first 60 min (by ~10:15)
+ * - 4% move up within first 60 min: bars 0..19 (20 × 3m from 09:15; see FIRST_HOUR_BAR_COUNT)
  * - Pullback or consolidation after that; pullback ≥1% from first-hour high (or consolidation = last 5 bars range ≤2%); pullback from day high not more than 4%
  * - Enter on breakout candle only; breakout candle must close above day's high (so far)
  * - No entry after 12:30
  * - Day volume at entry >= 2.7x prev day volume
- * - Gap up <= 2% (day open vs prev close)
+ * - Gap up <= 3% (day open vs prev close; GAP_UP_MAX_PCT)
  * - Entry candle: no large wicks (each wick <= 35% of range)
  * - Breakout candle volume >= 1.1x avg of previous 5 bars
- * - Fixed 1% SL below entry (always)
+ * - Fixed 1.5% SL below entry (always)
  * - Breakout close must be meaningfully above recent high (stronger breakout)
  */
 
-// First 60 min = 20 bars (9:15–10:15). Entry loop from bar 20 (10:18).
-const FIRST_45_BARS = 20;
-const GAP_UP_MAX_PCT = 3;
+/** First hour of session in 3m bars: 20 × 3m = 60 min from market open (09:15). */
+export const FIRST_HOUR_BAR_COUNT = 20;
+
+export const GAP_UP_MAX_PCT = 3;
 const MOVE_UP_MIN_PCT = 4;
-const PULLBACK_PCT = 1;       // low must have been at least 1% below high45 (allows mild pullbacks like 10:12–10:39)
+const PULLBACK_PCT = 1;       // low must have been at least 1% below first-hour high (allows mild pullbacks like 10:12–10:39)
 const PULLBACK_MAX_FROM_TOP_PCT = 4; // do not take if pullback is more than 4% from day's top
 const WICK_MAX_PCT = 0.35;    // each wick at most 35% of candle range
 const VOL_AVG_LOOKBACK = 5;
@@ -26,7 +27,7 @@ const BREAKOUT_VOL_MULT = 1.1; // allow breakouts with ≥1.1x avg(prev 5) so co
 const DAY_VOL_MULT = 2.7;     // day volume >= 2.7x prev day
 const CONSOLIDATION_RANGE_PCT = 2;   // consolidation = range of last 5 bars <= 2% (includes 10:12–10:39 style)
 const MAX_ENTRY_TIME = '12:30';      // do not take trades after 12:30 (bar time <= 12:30 allowed)
-const FIXED_SL_PCT = 1;               // fixed SL 1% below entry
+const FIXED_SL_PCT = 1.5;             // fixed SL 1.5% below entry
 const MAX_DAY_MOVE_PCT = 14;          // skip entries if day move from open > 14% at entry
 const BREAKOUT_STRENGTH_MIN_PCT = 0.4; // close must be at least 0.4% above recent high
 const TWO_BAR_COMBINED_UP_MAX_PCT = 9; // skip if previous+current bar up% sum is too stretched
@@ -78,7 +79,7 @@ export function findEntry(bars, prevDay, opts = {}) {
     if (debug && bar) failedBars.push({ time: (bar.time || '').slice(0, 5), reason });
   }
 
-  if (!bars || bars.length < FIRST_45_BARS + 1) return null;
+  if (!bars || bars.length < FIRST_HOUR_BAR_COUNT + 1) return null;
   const dayOpen = bars[0].open;
   const prevClose = prevDay.close;
   const prevVol = prevDay.volume || 0;
@@ -86,13 +87,13 @@ export function findEntry(bars, prevDay, opts = {}) {
   const gapPct = prevClose > 0 ? ((dayOpen - prevClose) / prevClose) * 100 : 0;
   if (gapPct > gapUpMaxPct) return null;
 
-  const first45 = bars.slice(0, FIRST_45_BARS);
-  const high45 = Math.max(...first45.map((b) => b.high));
-  const movePct = dayOpen > 0 ? ((high45 - dayOpen) / dayOpen) * 100 : 0;
+  const firstHourBars = bars.slice(0, FIRST_HOUR_BAR_COUNT);
+  const firstHourHigh = Math.max(...firstHourBars.map((b) => b.high));
+  const movePct = dayOpen > 0 ? ((firstHourHigh - dayOpen) / dayOpen) * 100 : 0;
   if (movePct < moveUpMinPct) return null;
 
   let bar;
-  for (let i = FIRST_45_BARS; i < bars.length; i++) {
+  for (let i = FIRST_HOUR_BAR_COUNT; i < bars.length; i++) {
     bar = bars[i];
     const barTime = (bar.time || '').slice(0, 5);
     if (barTime > maxEntryTime) { skip(`after ${maxEntryTime}`); continue; }
@@ -120,8 +121,8 @@ export function findEntry(bars, prevDay, opts = {}) {
       if (pullbackPct > pullbackMaxFromTopPct) { skip(`pullback from high ${pullbackPct.toFixed(1)}% > ${pullbackMaxFromTopPct}%`); continue; }
     }
     let hasPullback = false;
-    for (let j = FIRST_45_BARS; j < i; j++) {
-      if (bars[j].low <= high45 * (1 - pullbackPct / 100)) {
+    for (let j = FIRST_HOUR_BAR_COUNT; j < i; j++) {
+      if (bars[j].low <= firstHourHigh * (1 - pullbackPct / 100)) {
         hasPullback = true;
         break;
       }

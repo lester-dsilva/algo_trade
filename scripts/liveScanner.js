@@ -2,8 +2,8 @@
  * Live scanner: subscribe to symbols from config/nse_mcap_above_900cr.csv,
  * build 3m candles from Kite ticks, run v2 entry logic on each new bar, persist paper positions, send Telegram alerts.
  *
- * v2 logic: 4% move in first 45 min, pullback/consolidation, breakout (2.7x day vol, 2x breakout vol, gap ≤2%, wicks ≤35%).
- * Exits: fixed SL 1% below entry (v2 entryLogic); 3% first target then 1.5% trail; square-off 15:20 IST (LTP); bar EOD 15:24; 15:30 sweep fallback. Position size ₹20,000 (max 6 concurrent).
+ * v2 logic: 4% move in first 60 min (20×3m bars), pullback/consolidation, breakout (2.7× day vol, 1.1× breakout bar vs avg prev 5, gap ≤3%, wicks ≤35%).
+ * Exits: fixed SL 1.5% below entry (same as v2 entryLogic backtest); 3% first target then 1.5% trail; square-off 15:20 IST (LTP); bar EOD 15:24; 15:30 sweep fallback. Position size ₹20,000 (max 6 concurrent).
  *
  * Usage: node scripts/liveScanner.js
  *
@@ -19,7 +19,7 @@ import path from 'path';
 import { getKite } from '../lib/kite.js';
 import { KiteTicker } from 'kiteconnect';
 import { createCandleBuilder } from '../lib/candleBuilder.js';
-import { findEntry } from '../v2/lib/entryLogic.js';
+import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../v2/lib/entryLogic.js';
 import { addPosition, processBar, getTotalPnl, eodSweep, getOpenPositions, POSITION_VALUE, closeAllOpenAtPrices } from '../lib/positionStore.js';
 import { sendAlert, isConfigured as telegramConfigured } from '../lib/telegram.js';
 import { placeBuyOrder, placeSellOrder } from '../lib/orderExecutor.js';
@@ -30,6 +30,8 @@ const MAX_TOKENS = 3000;
 const LIVE_TRADING        = process.env.LIVE_TRADING === 'true';
 const MAX_POSITIONS       = parseInt(process.env.MAX_POSITIONS || '6', 10);
 const LIVE_TIERED_SIZING  = process.env.LIVE_TIERED_SIZING === 'true';
+/** Stop distance below entry for live entries only (findEntry gets fixedSlPct override). */
+const LIVE_FIXED_SL_PCT   = 1.5;
 
 // Tier % allocation per trade sequence (must sum to 100; default: front-weighted 25/20/17/15/13/10)
 const LIVE_TIER_PCTS = process.env.LIVE_TIER_PCTS
@@ -129,8 +131,6 @@ function buildHistoricalBars(candles, dateStr) {
 function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen = null) {
   if (!prevClose || prevClose <= 0) return null;
 
-  const FIRST_45_BARS = 20;
-  const GAP_UP_MAX_PCT = 2;
   const MOVE_UP_MIN_PCT = 4;
   const PULLBACK_PCT = 1;
   const PULLBACK_MAX_FROM_TOP_PCT = 4;
@@ -138,11 +138,10 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   const VOL_AVG_LOOKBACK = 5;
   const CONSOLIDATION_RANGE_PCT = 2;
   const MAX_ENTRY_TIME = '12:30';
-  const FIXED_SL_PCT = 1;
   const MAX_DAY_MOVE_PCT = 14;
   const BREAKOUT_STRENGTH_MIN_PCT = 0.4;
 
-  if (!bars || bars.length < FIRST_45_BARS + VOL_AVG_LOOKBACK + 1) return null;
+  if (!bars || bars.length < FIRST_HOUR_BAR_COUNT + VOL_AVG_LOOKBACK + 1) return null;
 
   const i = bars.length - 1;
   const bar = bars[i];
@@ -150,9 +149,9 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   const gapPct = prevClose > 0 ? ((dayOpen - prevClose) / prevClose) * 100 : 0;
   if (gapPct > GAP_UP_MAX_PCT) return null;
 
-  const first45 = bars.slice(0, FIRST_45_BARS);
-  const high45 = Math.max(...first45.map((b) => b.high));
-  const movePct = dayOpen > 0 ? ((high45 - dayOpen) / dayOpen) * 100 : 0;
+  const firstHourBars = bars.slice(0, FIRST_HOUR_BAR_COUNT);
+  const firstHourHigh = Math.max(...firstHourBars.map((b) => b.high));
+  const movePct = dayOpen > 0 ? ((firstHourHigh - dayOpen) / dayOpen) * 100 : 0;
   if (movePct < MOVE_UP_MIN_PCT) return null;
 
   const barTime = (bar.time || '').slice(0, 5);
@@ -180,8 +179,8 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   }
 
   let hasPullback = false;
-  for (let j = FIRST_45_BARS; j < i; j++) {
-    if (bars[j].low <= high45 * (1 - PULLBACK_PCT / 100)) {
+  for (let j = FIRST_HOUR_BAR_COUNT; j < i; j++) {
+    if (bars[j].low <= firstHourHigh * (1 - PULLBACK_PCT / 100)) {
       hasPullback = true;
       break;
     }
@@ -210,7 +209,7 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   if (upperWick / range > WICK_MAX_PCT || lowerWick / range > WICK_MAX_PCT) return null;
 
   const entry = bar.close;
-  const stop = Math.round(entry * (1 - FIXED_SL_PCT / 100) * 100) / 100;
+  const stop = Math.round(entry * (1 - LIVE_FIXED_SL_PCT / 100) * 100) / 100;
   return { entry, stop, time: bar.time, barIndex: i, date: bar.date };
 }
 
@@ -600,7 +599,7 @@ async function main() {
             dayVolMultiple: pending.prevDay.volume > 0 ? Number((official.cumVol / pending.prevDay.volume).toFixed(3)) : null,
           });
 
-          const officialResult = findEntry(official.officialBars, pending.prevDay);
+          const officialResult = findEntry(official.officialBars, pending.prevDay, { fixedSlPct: LIVE_FIXED_SL_PCT });
           const officialTime5 = (officialResult?.time || '').slice(0, 5);
           if (!officialResult || officialTime5 !== pending.barTime5) {
             console.error(`[ENTRY_SKIP] ${pending.symbol} @ ${pending.time} | historical volume available but entry not confirmed`);

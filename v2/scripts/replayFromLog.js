@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadPrevDayOhlc } from '../lib/loadBacktestData.js';
-import { findEntry } from '../lib/entryLogic.js';
+import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../lib/entryLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -84,13 +84,13 @@ const prevDay = { close: prev.close, volume: prev.volume || 0 };
 console.log('Prev day: close=', prev.close, 'vol=', prev.volume);
 
 const dayOpen = bars[0].open;
-const first45 = bars.slice(0, 15);
-const high45 = Math.max(...first45.map((b) => b.high));
-const movePct = dayOpen > 0 ? ((high45 - dayOpen) / dayOpen) * 100 : 0;
+const firstHourBars = bars.slice(0, FIRST_HOUR_BAR_COUNT);
+const firstHourHigh = Math.max(...firstHourBars.map((b) => b.high));
+const movePct = dayOpen > 0 ? ((firstHourHigh - dayOpen) / dayOpen) * 100 : 0;
 const gapPct = prev.close > 0 ? ((dayOpen - prev.close) / prev.close) * 100 : 0;
 console.log('Day open (first bar):', dayOpen);
-console.log('Gap% (open vs prev close):', gapPct.toFixed(2), gapPct > 2 ? 'FAIL (>2%)' : 'ok');
-console.log('First 45m high:', high45, '| Move% from open:', movePct.toFixed(2), movePct < 4 ? 'FAIL (<4%)' : 'ok');
+console.log('Gap% (open vs prev close):', gapPct.toFixed(2), gapPct > GAP_UP_MAX_PCT ? `FAIL (>${GAP_UP_MAX_PCT}%)` : 'ok');
+console.log('First-hour high (60m,', FIRST_HOUR_BAR_COUNT, 'bars):', firstHourHigh, '| Move% from open:', movePct.toFixed(2), movePct < 4 ? 'FAIL (<4%)' : 'ok');
 console.log('');
 
 const result = findEntry(bars, prevDay, { debug: true });
@@ -111,7 +111,6 @@ if (result) {
 }
 
 console.log('findEntry returned NULL on live bars. Checking why each bar failed up to 12:21...\n');
-const FIRST_45_BARS = 15;
 const VOL_AVG_LOOKBACK = 5;
 const DAY_VOL_MULT = 2.7;
 const MAX_ENTRY_TIME = '12:30';
@@ -125,18 +124,18 @@ const MAX_SL_PCT = 2;
 const MIN_SL_PCT = 0.8;
 const STOP_BUFFER_PCT = 0.25;
 
-if (gapPct > 2) {
-  console.log('ROOT CAUSE: Gap', gapPct.toFixed(2), '% > 2% — entry logic never runs.');
+if (gapPct > GAP_UP_MAX_PCT) {
+  console.log('ROOT CAUSE: Gap', gapPct.toFixed(2), '% >', GAP_UP_MAX_PCT, '% — entry logic never runs.');
   process.exit(0);
 }
 if (movePct < 4) {
-  console.log('ROOT CAUSE: Move from open', movePct.toFixed(2), '% < 4% in first 45m — entry logic never runs.');
+  console.log('ROOT CAUSE: Move from open', movePct.toFixed(2), '% < 4% in first 60m — entry logic never runs.');
   process.exit(0);
 }
 
 const targetTime = '12:21';
 let foundBar = null;
-for (let i = FIRST_45_BARS + VOL_AVG_LOOKBACK; i < bars.length; i++) {
+for (let i = FIRST_HOUR_BAR_COUNT + VOL_AVG_LOOKBACK; i < bars.length; i++) {
   const bar = bars[i];
   const barTime = (bar.time || '').slice(0, 5);
   if (barTime > MAX_ENTRY_TIME) continue;
@@ -171,8 +170,8 @@ for (let i = FIRST_45_BARS + VOL_AVG_LOOKBACK; i < bars.length; i++) {
     }
   }
   let hasPullback = false;
-  for (let j = FIRST_45_BARS; j < i; j++) {
-    if (bars[j].low <= high45 * (1 - PULLBACK_PCT / 100)) {
+  for (let j = FIRST_HOUR_BAR_COUNT; j < i; j++) {
+    if (bars[j].low <= firstHourHigh * (1 - PULLBACK_PCT / 100)) {
       hasPullback = true;
       break;
     }

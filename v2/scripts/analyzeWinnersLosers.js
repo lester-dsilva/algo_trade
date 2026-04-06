@@ -25,7 +25,6 @@ const FIRST_TARGET_PCT = 3;
 const TRAIL_PCT = 1.5;
 const EOD_BAR_TIME = '15:24';
 const VOL_AVG_LOOKBACK = 5;
-const FIRST_45_BARS = 15;
 
 function normalizeFilename(symbol) {
   return symbol.toLowerCase().replace(/&/g, '').replace(/\s/g, '');
@@ -273,7 +272,7 @@ function main() {
     } else if (best.name.includes('Vol ratio')) {
       console.log('→ Increase BREAKOUT_VOL_MULT in v2/lib/entryLogic.js (e.g. 2 → 2.5 or 3).');
     } else if (best.name.includes('Gap')) {
-      console.log('→ Tighten GAP_UP_MAX_PCT in v2/lib/entryLogic.js (e.g. 2 → 1).');
+      console.log('→ Tighten GAP_UP_MAX_PCT in v2/lib/entryLogic.js (e.g. 3 → 2).');
     } else if (best.name.includes('SL')) {
       console.log('→ Add max SL filter or reduce MAX_SL_PCT in v2/lib/entryLogic.js.');
     }

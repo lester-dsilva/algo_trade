@@ -15,7 +15,7 @@ const BASELINE_CONFIG_DEFAULTS = {
   wickMaxPct: 0.35,
   consolidationRangePct: 2,
   maxEntryTime: '12:30',
-  fixedSlPct: 1,
+  fixedSlPct: 1.5,
   maxDayMovePct: 14,
   breakoutStrengthMinPct: 0.4,
   firstTargetPct: 3,
