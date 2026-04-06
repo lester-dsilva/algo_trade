@@ -55,5 +55,43 @@
     "exitPrice": 38.91,
     "pnl": 574.21,
     "exitReason": "trail_stop"
+  },
+  {
+    "id": 4,
+    "symbol": "LATENTVIEW",
+    "side": "long",
+    "entryTime": "2026-04-02 11:48:00",
+    "entryPrice": 293.55,
+    "stop": 290.61,
+    "target": 302.36,
+    "status": "closed",
+    "signalType": "v2_breakout",
+    "qty": 102,
+    "initialStop": 290.61,
+    "highWaterMark": 313.4,
+    "firstTargetHit": true,
+    "exitTime": "2026-04-02 15:24:00",
+    "exitPrice": 313.4,
+    "pnl": 2024.7,
+    "exitReason": "eod"
+  },
+  {
+    "id": 5,
+    "symbol": "NELCO",
+    "side": "long",
+    "entryTime": "2026-04-06 12:27:00",
+    "entryPrice": 606.55,
+    "stop": 600.48,
+    "target": 624.75,
+    "status": "closed",
+    "signalType": "v2_breakout",
+    "qty": 49,
+    "initialStop": 600.48,
+    "highWaterMark": 0,
+    "firstTargetHit": false,
+    "exitTime": "2026-04-06 12:33:00",
+    "exitPrice": 600.48,
+    "pnl": -297.43,
+    "exitReason": "initial_sl"
   }
 ]

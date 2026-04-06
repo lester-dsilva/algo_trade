@@ -3,7 +3,7 @@
  * build 3m candles from Kite ticks, run v2 entry logic on each new bar, persist paper positions, send Telegram alerts.
  *
  * v2 logic: 4% move in first 45 min, pullback/consolidation, breakout (2.7x day vol, 2x breakout vol, gap ≤2%, wicks ≤35%).
- * Exits: fixed SL 1% below entry (v2 entryLogic); 3% first target then 1.5% trail; EOD 15:24. Position size ₹20,000 (max 6 concurrent).
+ * Exits: fixed SL 1% below entry (v2 entryLogic); 3% first target then 1.5% trail; square-off 15:20 IST (LTP); bar EOD 15:24; 15:30 sweep fallback. Position size ₹20,000 (max 6 concurrent).
  *
  * Usage: node scripts/liveScanner.js
  *
@@ -20,7 +20,7 @@ import { getKite } from '../lib/kite.js';
 import { KiteTicker } from 'kiteconnect';
 import { createCandleBuilder } from '../lib/candleBuilder.js';
 import { findEntry } from '../v2/lib/entryLogic.js';
-import { addPosition, processBar, getTotalPnl, eodSweep, getOpenPositions, POSITION_VALUE } from '../lib/positionStore.js';
+import { addPosition, processBar, getTotalPnl, eodSweep, getOpenPositions, POSITION_VALUE, closeAllOpenAtPrices } from '../lib/positionStore.js';
 import { sendAlert, isConfigured as telegramConfigured } from '../lib/telegram.js';
 import { placeBuyOrder, placeSellOrder } from '../lib/orderExecutor.js';
 
@@ -715,8 +715,55 @@ async function main() {
     }
   }
 
-  // ── EOD sweep at 15:30 IST ─────────────────────────────────────────────────
+  // ── Square-off 15:20 IST (LTP) — before bar EOD / MIS window ───────────────
   const todayISTForEod = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const squareOff1520At = new Date(`${todayISTForEod}T15:20:00+05:30`);
+  const msTo1520 = squareOff1520At.getTime() - Date.now();
+  if (msTo1520 > 0) {
+    setTimeout(async () => {
+      const open1520 = getOpenPositions();
+      if (open1520.length === 0) return;
+      /** @type {Record<string, number>} */
+      const priceBySymbol = {};
+      try {
+        const ltp = await kite.getLTP(open1520.map((p) => `NSE:${p.symbol}`));
+        for (const [key, row] of Object.entries(ltp || {})) {
+          const sym = key.includes(':') ? key.split(':').slice(1).join(':') : key;
+          const lp = row && typeof row === 'object' ? row.last_price : undefined;
+          if (Number.isFinite(lp) && lp > 0) priceBySymbol[sym] = lp;
+        }
+      } catch (e) {
+        const reason = e?.message ?? String(e);
+        console.error('[SQ1520] getLTP failed:', reason);
+        logToFile('squareoff_1520_ltp_error', reason);
+      }
+      const closed1520 = closeAllOpenAtPrices(todayISTForEod, '15:20:00', priceBySymbol, 'squareoff_1520');
+      if (closed1520.length > 0) {
+        console.error(`[SQ1520] Closed ${closed1520.length} open position(s) at LTP`);
+        for (const p of closed1520) {
+          console.error(`  ${p.symbol} #${p.id} → squareoff_1520 @ ${p.exitPrice} | P&L ${pnlStr(p.pnl)}`);
+          logToFile('exit', { symbol: p.symbol, date: todayISTForEod, time: '15:20:00', id: p.id, reason: 'squareoff_1520', exitPrice: p.exitPrice, qty: p.qty, pnl: p.pnl });
+          const buyVal1520 = Math.round(p.entryPrice * p.qty * 100) / 100;
+          const sellVal1520 = Math.round(p.exitPrice * p.qty * 100) / 100;
+          sendAlert([
+            'EXIT (15:20 square-off)',
+            `Symbol: ${p.symbol}`,
+            `ID: #${p.id}`,
+            `Time: 15:20`,
+            `Buy Value: ₹${buyVal1520.toLocaleString('en-IN')}`,
+            `Sell Value: ₹${sellVal1520.toLocaleString('en-IN')}`,
+            `P&L: ${pnlStr(p.pnl)}`,
+          ].join('\n'));
+          if (LIVE_TRADING) {
+            await placeSellOrder(kite, p.symbol, p.qty, logToFile, sendAlert);
+          }
+        }
+        logSummary('SQ1520');
+      }
+    }, msTo1520);
+  }
+
+  // ── EOD sweep at 15:30 IST ─────────────────────────────────────────────────
   const eodSweepAt = new Date(`${todayISTForEod}T15:30:00+05:30`);
   const msToEod = eodSweepAt.getTime() - Date.now();
   if (msToEod > 0) {

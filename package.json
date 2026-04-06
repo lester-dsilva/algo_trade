@@ -21,6 +21,7 @@
     "pre-market": "node scripts/preMarket.js",
     "fetch3m": "node scripts/fetchPrevDay3m.js",
     "analyze:otc": "node v2/scripts/analyzeOpenToCloseSurge.js",
+    "order:one": "node scripts/placeOneOrder.js",
     "live": "node scripts/liveScanner.js",
     "positions": "node scripts/positionManager.js"
   },
