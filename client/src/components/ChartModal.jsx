@@ -21,8 +21,24 @@ function toBusinessDay(dateStr) {
 }
 
 const ENTRY_LOOP_START_BAR = 20;
-// Match v2/entryLogic.js for volume condition text
-const DAY_VOL_MULT = 2.7;
+// Match v2/entryLogic.js time-adjusted day volume gate + breakout bar vol
+const SESSION_LENGTH_MINUTES = 375;
+function elapsedSessionMinutesFromBarTime(timeStr) {
+  if (timeStr == null || typeof timeStr !== 'string') return null;
+  const trimmed = timeStr.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(':');
+  if (parts.length < 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  const open = 9 * 60 + 15;
+  const elapsed = h * 60 + m - open;
+  if (!Number.isFinite(elapsed)) return null;
+  return Math.max(0, Math.min(SESSION_LENGTH_MINUTES, elapsed));
+}
+const DAY_VOL_MULT = 1.5;
 const BREAKOUT_VOL_MULT = 1.1;
 const VOL_AVG_LOOKBACK = 5;
 
@@ -109,19 +125,35 @@ export default function ChartModal({ date, symbol, onClose }) {
           const reason = failedBarsMap.get(barTimeStr);
           message = reason ? `Why no entry: ${reason}` : 'No skip reason for this bar';
         }
-        // Volume conditions (match entryLogic: day vol >= 2.7x prev, bar vol >= 1.1x avg(prev 5))
+        // Volume conditions (match entryLogic: time-adjusted day vol, bar vol >= 1.1x avg(prev 5))
         let volumeConditions = null;
         const prevVol = data.prevDay?.volume ?? 0;
         if (prevVol >= 0 && bar?.volume != null) {
           const cumVol = data.bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-          const dayVolRequired = DAY_VOL_MULT * prevVol;
-          const dayVolMet = prevVol > 0 ? cumVol >= dayVolRequired : true;
-          volumeConditions = {
-            dayVol: cumVol,
-            dayVolRequired,
-            prevVol,
-            dayVolMet,
-          };
+          const elapsedMin = elapsedSessionMinutesFromBarTime(bar.time ?? '');
+          if (elapsedMin == null) {
+            volumeConditions = {
+              dayVol: cumVol,
+              dayVolRequired: null,
+              prevVol,
+              dayVolMet: false,
+              elapsedMin: null,
+              expectedPrevByNow: null,
+              dayVolTimeUnparsed: true,
+            };
+          } else {
+            const expectedPrev = prevVol > 0 ? prevVol * (elapsedMin / SESSION_LENGTH_MINUTES) : 0;
+            const dayVolRequired = expectedPrev > 0 ? DAY_VOL_MULT * expectedPrev : 0;
+            const dayVolMet = prevVol <= 0 || expectedPrev <= 0 ? true : cumVol >= dayVolRequired;
+            volumeConditions = {
+              dayVol: cumVol,
+              dayVolRequired,
+              prevVol,
+              dayVolMet,
+              elapsedMin,
+              expectedPrevByNow: Math.round(expectedPrev),
+            };
+          }
           if (i >= VOL_AVG_LOOKBACK) {
             const recent5 = data.bars.slice(i - VOL_AVG_LOOKBACK, i);
             const avg5 = recent5.reduce((s, b) => s + (b.volume || 0), 0) / VOL_AVG_LOOKBACK;
@@ -264,7 +296,11 @@ export default function ChartModal({ date, symbol, onClose }) {
             {clickedBarReason.volumeConditions && (
               <p style={{ margin: '0.5rem 0 0', fontSize: '0.9rem' }}>
                 <strong>Volume conditions:</strong>{' '}
-                Day vol: {clickedBarReason.volumeConditions.dayVol?.toLocaleString()} / {clickedBarReason.volumeConditions.dayVolRequired?.toLocaleString()} (≥{DAY_VOL_MULT}× prev {clickedBarReason.volumeConditions.prevVol?.toLocaleString()}) — {clickedBarReason.volumeConditions.dayVolMet ? 'Met' : 'Not met'}
+                {clickedBarReason.volumeConditions.dayVolTimeUnparsed ? (
+                  <>Day vol (time-adjusted): cannot parse bar.time — same as entry skip</>
+                ) : (
+                  <>Day vol (time-adjusted): cum {clickedBarReason.volumeConditions.dayVol?.toLocaleString()} / need {Math.ceil(clickedBarReason.volumeConditions.dayVolRequired || 0).toLocaleString()} (≥{DAY_VOL_MULT}× prorated prev ≈{clickedBarReason.volumeConditions.expectedPrevByNow?.toLocaleString()} at {clickedBarReason.volumeConditions.elapsedMin}m/{SESSION_LENGTH_MINUTES}) — {clickedBarReason.volumeConditions.dayVolMet ? 'Met' : 'Not met'}</>
+                )}
                 {clickedBarReason.volumeConditions.barVol != null && (
                   <> · Bar vol: {clickedBarReason.volumeConditions.barVol?.toLocaleString()} / {clickedBarReason.volumeConditions.barVolRequired?.toFixed(0)} (≥{BREAKOUT_VOL_MULT}× avg 5) — {clickedBarReason.volumeConditions.barVolMet ? 'Met' : 'Not met'}</>
                 )}

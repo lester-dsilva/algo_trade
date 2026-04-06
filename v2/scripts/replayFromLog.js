@@ -8,7 +8,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadPrevDayOhlc } from '../lib/loadBacktestData.js';
-import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../lib/entryLogic.js';
+import {
+  findEntry,
+  FIRST_HOUR_BAR_COUNT,
+  GAP_UP_MAX_PCT,
+  DAY_VOL_MULT,
+  SESSION_LENGTH_MINUTES,
+  elapsedSessionMinutesFromBarTime,
+} from '../lib/entryLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -112,7 +119,6 @@ if (result) {
 
 console.log('findEntry returned NULL on live bars. Checking why each bar failed up to 12:21...\n');
 const VOL_AVG_LOOKBACK = 5;
-const DAY_VOL_MULT = 2.7;
 const MAX_ENTRY_TIME = '12:30';
 const PULLBACK_MAX_FROM_TOP_PCT = 4;
 const PULLBACK_PCT = 2;
@@ -140,9 +146,22 @@ for (let i = FIRST_HOUR_BAR_COUNT + VOL_AVG_LOOKBACK; i < bars.length; i++) {
   const barTime = (bar.time || '').slice(0, 5);
   if (barTime > MAX_ENTRY_TIME) continue;
   const cumVol = bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-  if (prevDay.volume > 0 && cumVol < DAY_VOL_MULT * prevDay.volume) {
+  const elapsedM = elapsedSessionMinutesFromBarTime(bar.time);
+  if (elapsedM == null) {
     if (barTime === targetTime) {
-      console.log('BAR 12:21 FAILED: day vol', (cumVol / prevDay.volume).toFixed(1), 'x <', DAY_VOL_MULT, 'x (need', Math.ceil(DAY_VOL_MULT * prevDay.volume), 'cum vol, had', cumVol, ')');
+      console.log('BAR 12:21 FAILED: time-adjusted day vol — cannot parse bar.time');
+      foundBar = true;
+    }
+    continue;
+  }
+  const prevV = prevDay.volume || 0;
+  const expectedPrev = prevV * (elapsedM / SESSION_LENGTH_MINUTES);
+  if (prevV > 0 && expectedPrev > 0 && cumVol < DAY_VOL_MULT * expectedPrev) {
+    if (barTime === targetTime) {
+      console.log(
+        'BAR 12:21 FAILED: time-adjusted day vol cum', cumVol, '<', DAY_VOL_MULT, '× prorated prev', Math.round(expectedPrev),
+        `(${elapsedM}m/${SESSION_LENGTH_MINUTES}; need cum ≥ ${Math.ceil(DAY_VOL_MULT * expectedPrev)})`,
+      );
       foundBar = true;
     }
     continue;

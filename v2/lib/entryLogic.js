@@ -6,7 +6,7 @@
  * - Pullback or consolidation after that; pullback ≥1% from first-hour high (or consolidation = last 5 bars range ≤2%); pullback from day high not more than 4%
  * - Enter on breakout candle only; breakout candle must close above day's high (so far)
  * - No entry after 12:30
- * - Day volume at entry >= 2.7x prev day volume
+ * - Time-adjusted day volume: cum vol through this bar must be >= dayVolMult × (prev day vol × elapsed/375), where elapsed is minutes since 09:15 in a 375-min session (09:15–15:30)
  * - Gap up <= 3% (day open vs prev close; GAP_UP_MAX_PCT)
  * - Entry candle: no large wicks (each wick <= 35% of range)
  * - Breakout candle volume >= 1.1x avg of previous 5 bars
@@ -24,13 +24,39 @@ const PULLBACK_MAX_FROM_TOP_PCT = 4; // do not take if pullback is more than 4% 
 const WICK_MAX_PCT = 0.35;    // each wick at most 35% of candle range
 const VOL_AVG_LOOKBACK = 5;
 const BREAKOUT_VOL_MULT = 1.1; // allow breakouts with ≥1.1x avg(prev 5) so consolidation-breakout bars like 10:42 qualify
-const DAY_VOL_MULT = 2.7;     // day volume >= 2.7x prev day
+/** Min ratio of today cum vol vs prorated previous-day volume (see time-adjusted gate). */
+export const DAY_VOL_MULT = 1.5;
 const CONSOLIDATION_RANGE_PCT = 2;   // consolidation = range of last 5 bars <= 2% (includes 10:12–10:39 style)
 const MAX_ENTRY_TIME = '12:30';      // do not take trades after 12:30 (bar time <= 12:30 allowed)
 const FIXED_SL_PCT = 1.5;             // fixed SL 1.5% below entry
 const MAX_DAY_MOVE_PCT = 14;          // skip entries if day move from open > 14% at entry
 const BREAKOUT_STRENGTH_MIN_PCT = 0.4; // close must be at least 0.4% above recent high
 const TWO_BAR_COMBINED_UP_MAX_PCT = 9; // skip if previous+current bar up% sum is too stretched
+
+/** NSE cash session 09:15–15:30 in minutes (for prorating prev-day volume). */
+export const SESSION_LENGTH_MINUTES = 375;
+
+const SESSION_OPEN_MINUTES_FROM_MIDNIGHT = 9 * 60 + 15;
+
+/**
+ * Minutes since session open (09:15) for a bar clock time, clamped to [0, SESSION_LENGTH_MINUTES].
+ * Accepts "H:mm", "HH:mm", "HH:mm:ss" (seconds ignored). Returns null if unparseable.
+ */
+export function elapsedSessionMinutesFromBarTime(timeStr) {
+  if (timeStr == null || typeof timeStr !== 'string') return null;
+  const trimmed = timeStr.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(':');
+  if (parts.length < 2) return null;
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  const minsFromMidnight = h * 60 + m;
+  const elapsed = minsFromMidnight - SESSION_OPEN_MINUTES_FROM_MIDNIGHT;
+  if (!Number.isFinite(elapsed)) return null;
+  return Math.max(0, Math.min(SESSION_LENGTH_MINUTES, elapsed));
+}
 
 /**
  * Default config keys that can be overridden via opts (e.g. when creating a baseline).
@@ -102,7 +128,20 @@ export function findEntry(bars, prevDay, opts = {}) {
     if (dayMovePct > maxDayMovePct) { skip(`day move ${dayMovePct.toFixed(1)}% > ${maxDayMovePct}%`); continue; }
 
     const cumVol = bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-    if (prevVol > 0 && cumVol < dayVolMult * prevVol) { skip(`day vol ${(cumVol / prevVol).toFixed(1)}x < ${dayVolMult}x`); continue; }
+    const elapsedMin = elapsedSessionMinutesFromBarTime(bar.time);
+    if (elapsedMin == null) {
+      skip('time-adjusted day vol: cannot parse bar.time');
+      continue;
+    }
+    const elapsedFraction = elapsedMin / SESSION_LENGTH_MINUTES;
+    const expectedPrevVolByNow = prevVol * elapsedFraction;
+    if (prevVol > 0 && expectedPrevVolByNow > 0 && cumVol < dayVolMult * expectedPrevVolByNow) {
+      const ratioVsProrated = cumVol / expectedPrevVolByNow;
+      skip(
+        `time-adjusted day vol: cum ${cumVol} < ${dayVolMult}× prorated prev vol ${Math.round(expectedPrevVolByNow)} (${elapsedMin}m/${SESSION_LENGTH_MINUTES} of session, ${(elapsedFraction * 100).toFixed(1)}% of full day); need cum ≥ ${Math.ceil(dayVolMult * expectedPrevVolByNow)} (now ${ratioVsProrated.toFixed(2)}× prorated)`,
+      );
+      continue;
+    }
 
     const dayHighSoFar = Math.max(...bars.slice(0, i + 1).map((b) => b.high));
     let highBarIdx = i;

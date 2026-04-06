@@ -33,7 +33,7 @@ Defined in `v2/lib/entryLogic.js` (configurable via baseline config in the dashb
 | **Breakout strength** | ≥ 0.4% | Close must be at least 0.4% above the recent (last 5 bars) high. |
 | **Bullish** | — | Close &gt; open. |
 | **Wicks** | ≤ 35% each | Upper and lower wick each ≤ 35% of the candle’s range. |
-| **Day volume** | ≥ 2.7× prev day | Cumulative volume up to this bar ≥ 2.7× previous day volume. |
+| **Day volume** | ≥ 1.5× prorated prev | Cumulative volume up to this bar ≥ `dayVolMult` × (prev day volume × elapsed/375), where elapsed is minutes since 09:15 in a 375-minute session (09:15–15:30). |
 | **Bar volume** | ≥ 1.1× avg(prev 5) | This bar’s volume ≥ 1.1× average of the previous 5 bars. |
 
 ---
@@ -58,6 +58,6 @@ Defined in `v2/lib/entryLogic.js` (configurable via baseline config in the dashb
 
 When creating a baseline from the dashboard, you can override:
 
-- **Entry — volume:** `dayVolMult` (default 2.7), `breakoutVolMult` (default 1.1)
+- **Entry — volume:** `dayVolMult` (default 1.5, time-adjusted vs prorated prev-day volume), `breakoutVolMult` (default 1.1)
 - **Entry — other:** `gapUpMaxPct`, `moveUpMinPct`, `pullbackPct`, `pullbackMaxFromTopPct`, `wickMaxPct`, `consolidationRangePct`, `maxEntryTime`, `fixedSlPct`, `maxDayMovePct`, `breakoutStrengthMinPct`
 - **Exit:** `firstTargetPct` (default 3), `trailPct` (default 1.5)
