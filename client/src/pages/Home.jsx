@@ -7,6 +7,8 @@ const DEFAULT_TIERS = [75000, 60000, 50000, 45000, 40000, 30000];
 // Default baseline config (match v2/entryLogic.js and v2/scripts/runBacktest.js)
 const BASELINE_CONFIG_DEFAULTS = {
   dayVolMult: 2.7,
+  /** Linear ramp of required cum vol vs prev day to dayVolMult× by maxEntryTime */
+  dayVolRamp: true,
   breakoutVolMult: 1.1,
   gapUpMaxPct: 3,
   moveUpMinPct: 4,
@@ -358,7 +360,8 @@ export default function Home() {
               <p className="muted" style={{ marginBottom: '1rem' }}>Override values (optional). Saved baseline will use these.</p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem', marginBottom: '1rem' }}>
                 <label style={{ gridColumn: '1 / -1', fontWeight: 600 }}>Entry — volume</label>
-                <label><span className="muted">Day vol ≥ </span><input type="number" step="0.1" min="0" value={baselineConfig.dayVolMult} onChange={(e) => setConfigValue('dayVolMult', parseFloat(e.target.value) || 0)} style={{ width: 56, marginLeft: 4 }} />× prev</label>
+                <label><span className="muted">Day vol ≥ </span><input type="number" step="0.1" min="0" value={baselineConfig.dayVolMult} onChange={(e) => setConfigValue('dayVolMult', parseFloat(e.target.value) || 0)} style={{ width: 56, marginLeft: 4 }} />× prev by {baselineConfig.maxEntryTime || '12:30'}</label>
+                <label style={{ marginLeft: 8 }}><input type="checkbox" checked={baselineConfig.dayVolRamp !== false} onChange={(e) => setConfigValue('dayVolRamp', e.target.checked)} /> ramp</label>
                 <label><span className="muted">Bar vol ≥ </span><input type="number" step="0.1" min="0" value={baselineConfig.breakoutVolMult} onChange={(e) => setConfigValue('breakoutVolMult', parseFloat(e.target.value) || 0)} style={{ width: 56, marginLeft: 4 }} />× avg 5</label>
                 <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Entry — other</label>
                 <label><span className="muted">Gap up max %</span><input type="number" step="0.5" value={baselineConfig.gapUpMaxPct} onChange={(e) => setConfigValue('gapUpMaxPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>

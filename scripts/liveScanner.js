@@ -2,7 +2,7 @@
  * Live scanner: subscribe to symbols from config/nse_mcap_above_900cr.csv,
  * build 3m candles from Kite ticks, run v2 entry logic on each new bar, persist paper positions, send Telegram alerts.
  *
- * v2 logic: 4% move in first 60 min (20×3m bars), pullback/consolidation, breakout (2.7× day vol, 1.1× breakout bar vs avg prev 5, gap ≤3%, wicks ≤35%).
+ * v2 logic: 4% move in first 60 min (20×3m bars), pullback/consolidation, breakout (cum day vol ramps to 2.7× prev by 12:30, 1.1× breakout bar vs avg prev 5, gap ≤3%, wicks ≤35%).
  * Exits: fixed SL 1.5% below entry (same as v2 entryLogic backtest); 3% first target then 1.5% trail; square-off 15:20 IST (LTP); bar EOD 15:24; 15:30 sweep fallback. Position size ₹20,000 (max 6 concurrent).
  *
  * Usage: node scripts/liveScanner.js

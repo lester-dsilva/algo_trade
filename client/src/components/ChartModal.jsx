@@ -21,8 +21,10 @@ function toBusinessDay(dateStr) {
 }
 
 const ENTRY_LOOP_START_BAR = 20;
-// Match v2/entryLogic.js for volume condition text
-const DAY_VOL_MULT = 2.7;
+// Match v2/entryLogic.js for volume condition text (defaults; API may send entryParams)
+const DEFAULT_DAY_VOL_MULT = 2.7;
+const DEFAULT_DAY_VOL_RAMP = true;
+const DEFAULT_MAX_ENTRY_TIME = '12:30';
 const BREAKOUT_VOL_MULT = 1.1;
 const VOL_AVG_LOOKBACK = 5;
 
@@ -109,18 +111,35 @@ export default function ChartModal({ date, symbol, onClose }) {
           const reason = failedBarsMap.get(barTimeStr);
           message = reason ? `Why no entry: ${reason}` : 'No skip reason for this bar';
         }
-        // Volume conditions (match entryLogic: day vol >= 2.7x prev, bar vol >= 1.1x avg(prev 5))
+        // Volume conditions (match entryLogic: ramp to dayVolMult× by maxEntryTime, bar vol >= 1.1x avg(prev 5))
         let volumeConditions = null;
         const prevVol = data.prevDay?.volume ?? 0;
+        const ep = data.entryParams || {};
+        const dayVolMult = ep.dayVolMult ?? DEFAULT_DAY_VOL_MULT;
+        const dayVolRamp = ep.dayVolRamp !== undefined ? ep.dayVolRamp : DEFAULT_DAY_VOL_RAMP;
+        const maxT = (ep.maxEntryTime || DEFAULT_MAX_ENTRY_TIME).slice(0, 5);
+        const totalBarsToMaxEntry = Math.max(
+          1,
+          ep.totalBarsToMaxEntry ??
+            data.bars.filter((b) => (b.time || '').slice(0, 5) <= maxT).length,
+        );
         if (prevVol >= 0 && bar?.volume != null) {
           const cumVol = data.bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-          const dayVolRequired = DAY_VOL_MULT * prevVol;
+          const requiredMult =
+            dayVolRamp !== false
+              ? dayVolMult * Math.min(1, (i + 1) / totalBarsToMaxEntry)
+              : dayVolMult;
+          const dayVolRequired = prevVol > 0 ? requiredMult * prevVol : 0;
           const dayVolMet = prevVol > 0 ? cumVol >= dayVolRequired : true;
           volumeConditions = {
             dayVol: cumVol,
             dayVolRequired,
             prevVol,
             dayVolMet,
+            dayVolMult,
+            dayVolRamp,
+            requiredMult,
+            maxEntryTime: ep.maxEntryTime || DEFAULT_MAX_ENTRY_TIME,
           };
           if (i >= VOL_AVG_LOOKBACK) {
             const recent5 = data.bars.slice(i - VOL_AVG_LOOKBACK, i);
@@ -264,7 +283,7 @@ export default function ChartModal({ date, symbol, onClose }) {
             {clickedBarReason.volumeConditions && (
               <p style={{ margin: '0.5rem 0 0', fontSize: '0.9rem' }}>
                 <strong>Volume conditions:</strong>{' '}
-                Day vol: {clickedBarReason.volumeConditions.dayVol?.toLocaleString()} / {clickedBarReason.volumeConditions.dayVolRequired?.toLocaleString()} (≥{DAY_VOL_MULT}× prev {clickedBarReason.volumeConditions.prevVol?.toLocaleString()}) — {clickedBarReason.volumeConditions.dayVolMet ? 'Met' : 'Not met'}
+                Day vol: {clickedBarReason.volumeConditions.dayVol?.toLocaleString()} / {clickedBarReason.volumeConditions.dayVolRequired?.toLocaleString()} (≥{clickedBarReason.volumeConditions.requiredMult?.toFixed(2)}× prev {clickedBarReason.volumeConditions.prevVol?.toLocaleString()}{clickedBarReason.volumeConditions.dayVolRamp !== false ? `, ramp to ${clickedBarReason.volumeConditions.dayVolMult}× by ${clickedBarReason.volumeConditions.maxEntryTime}` : ''}) — {clickedBarReason.volumeConditions.dayVolMet ? 'Met' : 'Not met'}
                 {clickedBarReason.volumeConditions.barVol != null && (
                   <> · Bar vol: {clickedBarReason.volumeConditions.barVol?.toLocaleString()} / {clickedBarReason.volumeConditions.barVolRequired?.toFixed(0)} (≥{BREAKOUT_VOL_MULT}× avg 5) — {clickedBarReason.volumeConditions.barVolMet ? 'Met' : 'Not met'}</>
                 )}

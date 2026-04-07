@@ -8,7 +8,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadPrevDayOhlc } from '../lib/loadBacktestData.js';
-import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../lib/entryLogic.js';
+import {
+  findEntry,
+  FIRST_HOUR_BAR_COUNT,
+  GAP_UP_MAX_PCT,
+  ENTRY_DEFAULTS,
+  countBarsUpToMaxEntryTime,
+  getDayVolRequiredCumulativeVolume,
+} from '../lib/entryLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -112,8 +119,8 @@ if (result) {
 
 console.log('findEntry returned NULL on live bars. Checking why each bar failed up to 12:21...\n');
 const VOL_AVG_LOOKBACK = 5;
-const DAY_VOL_MULT = 2.7;
-const MAX_ENTRY_TIME = '12:30';
+const MAX_ENTRY_TIME = ENTRY_DEFAULTS.maxEntryTime;
+const totalBarsToMaxEntry = countBarsUpToMaxEntryTime(bars, MAX_ENTRY_TIME);
 const PULLBACK_MAX_FROM_TOP_PCT = 4;
 const PULLBACK_PCT = 2;
 const CONSOLIDATION_RANGE_PCT = 1.5;
@@ -140,9 +147,27 @@ for (let i = FIRST_HOUR_BAR_COUNT + VOL_AVG_LOOKBACK; i < bars.length; i++) {
   const barTime = (bar.time || '').slice(0, 5);
   if (barTime > MAX_ENTRY_TIME) continue;
   const cumVol = bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-  if (prevDay.volume > 0 && cumVol < DAY_VOL_MULT * prevDay.volume) {
+  const dayVolRequired = getDayVolRequiredCumulativeVolume(
+    prevDay.volume,
+    i,
+    totalBarsToMaxEntry,
+    ENTRY_DEFAULTS.dayVolMult,
+    ENTRY_DEFAULTS.dayVolRamp,
+  );
+  if (prevDay.volume > 0 && cumVol < dayVolRequired) {
     if (barTime === targetTime) {
-      console.log('BAR 12:21 FAILED: day vol', (cumVol / prevDay.volume).toFixed(1), 'x <', DAY_VOL_MULT, 'x (need', Math.ceil(DAY_VOL_MULT * prevDay.volume), 'cum vol, had', cumVol, ')');
+      const needMult = (dayVolRequired / prevDay.volume).toFixed(2);
+      console.log(
+        'BAR 12:21 FAILED: day vol',
+        (cumVol / prevDay.volume).toFixed(1),
+        'x <',
+        needMult,
+        'x ramp (need',
+        Math.ceil(dayVolRequired),
+        'cum vol, had',
+        cumVol,
+        ')',
+      );
       foundBar = true;
     }
     continue;

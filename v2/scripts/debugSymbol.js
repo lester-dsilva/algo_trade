@@ -6,7 +6,14 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadPrevDayOhlc, load3mForSymbol } from '../lib/loadBacktestData.js';
-import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../lib/entryLogic.js';
+import {
+  findEntry,
+  FIRST_HOUR_BAR_COUNT,
+  GAP_UP_MAX_PCT,
+  ENTRY_DEFAULTS,
+  countBarsUpToMaxEntryTime,
+  getDayVolRequiredCumulativeVolume,
+} from '../lib/entryLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -75,8 +82,8 @@ if (result) {
 
 console.log('No entry. Scanning bars for first failure...\n');
 const VOL_AVG_LOOKBACK = 5;
-const DAY_VOL_MULT = 3;
-const MAX_ENTRY_TIME = '12:30';
+const MAX_ENTRY_TIME = ENTRY_DEFAULTS.maxEntryTime;
+const totalBarsToMaxEntry = countBarsUpToMaxEntryTime(bars, MAX_ENTRY_TIME);
 const PULLBACK_PCT = 2;
 const PULLBACK_MAX_FROM_TOP_PCT = 4;
 const CONSOLIDATION_RANGE_PCT = 1.5;
@@ -93,7 +100,14 @@ for (let i = FIRST_HOUR_BAR_COUNT + VOL_AVG_LOOKBACK; i < Math.min(bars.length, 
   const barTime = (bar.time || '').slice(0, 5);
   if (barTime > MAX_ENTRY_TIME) continue;
   const cumVol = bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-  if (prev.volume > 0 && cumVol < DAY_VOL_MULT * prev.volume) continue;
+  const dayVolRequired = getDayVolRequiredCumulativeVolume(
+    prev.volume,
+    i,
+    totalBarsToMaxEntry,
+    ENTRY_DEFAULTS.dayVolMult,
+    ENTRY_DEFAULTS.dayVolRamp,
+  );
+  if (prev.volume > 0 && cumVol < dayVolRequired) continue;
   let hasPullback = false;
   let pullbackZoneLow = Infinity;
   for (let j = FIRST_HOUR_BAR_COUNT; j < i; j++) {

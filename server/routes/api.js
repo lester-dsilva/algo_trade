@@ -16,7 +16,7 @@ import {
   list3mSymbols,
 } from '../../v2/lib/loadBacktestData.js';
 import { runBacktestForDate } from '../../v2/scripts/runBacktest.js';
-import { findEntry } from '../../v2/lib/entryLogic.js';
+import { findEntry, ENTRY_DEFAULTS, countBarsUpToMaxEntryTime } from '../../v2/lib/entryLogic.js';
 import { sumChargesForTrades } from '../../lib/zerodhaCharges.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -593,7 +593,14 @@ apiRouter.get('/chart/3m', (req, res) => {
       ? { price: trade.exitPrice, reason: trade.exitReason, barIndex: trade.exitBarIndex }
       : null;
     const prevDay = prev ? { volume: prev.volume || 0 } : null;
-    res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit, failedBars, prevDay });
+    const totalBarsToMaxEntry = countBarsUpToMaxEntryTime(bars, ENTRY_DEFAULTS.maxEntryTime);
+    const entryParams = {
+      dayVolMult: ENTRY_DEFAULTS.dayVolMult,
+      dayVolRamp: ENTRY_DEFAULTS.dayVolRamp,
+      maxEntryTime: ENTRY_DEFAULTS.maxEntryTime,
+      totalBarsToMaxEntry,
+    };
+    res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit, failedBars, prevDay, entryParams });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
