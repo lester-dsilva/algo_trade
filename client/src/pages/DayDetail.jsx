@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useLocation, Link } from 'react-router-dom';
+import { useParams, useLocation, Link, useSearchParams } from 'react-router-dom';
 import * as api from '../api';
 import ChartModal from '../components/ChartModal';
 
@@ -22,10 +22,11 @@ function buildDayDataFromBaselineTrades(date, tradesForDay) {
 export default function DayDetail() {
   const { date } = useParams();
   const location = useLocation();
-  const fromBaseline = location.state?.fromBaseline;
+  const [searchParams] = useSearchParams();
+  const fromBaseline = location.state?.fromBaseline ?? searchParams.get('baseline') ?? undefined;
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
-  const [chartFor, setChartFor] = useState(null); // { date, symbol }
+  const [chartFor, setChartFor] = useState(null); // { date, symbol, baselineName? }
 
   useEffect(() => {
     if (!date) return;
@@ -85,7 +86,18 @@ export default function DayDetail() {
                 <td>{r.exitReason}</td>
                 <td className={r.pnl >= 0 ? 'positive' : 'negative'}>₹{r.pnl?.toFixed(2)}</td>
                 <td>
-                  <button onClick={() => setChartFor({ date, symbol: r.symbol })}>Chart</button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setChartFor({
+                        date,
+                        symbol: r.symbol,
+                        baselineName: fromBaseline || undefined,
+                      })
+                    }
+                  >
+                    Chart
+                  </button>
                 </td>
               </tr>
             ))}
@@ -97,6 +109,7 @@ export default function DayDetail() {
         <ChartModal
           date={chartFor.date}
           symbol={chartFor.symbol}
+          baselineName={chartFor.baselineName}
           onClose={() => setChartFor(null)}
         />
       )}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   createChart,
   CandlestickSeries,
@@ -20,7 +21,7 @@ function toBusinessDay(dateStr) {
   return { year: y, month: m, day: d };
 }
 
-const DEFAULT_MOVE_WINDOW_BARS = 20;
+const DEFAULT_MOVE_WINDOW_BARS = 11;
 // Match v2/entryLogic.js for volume condition text (defaults; API may send entryParams)
 const DEFAULT_DAY_VOL_MULT = 2.7;
 const DEFAULT_DAY_VOL_RAMP = true;
@@ -28,7 +29,11 @@ const DEFAULT_MAX_ENTRY_TIME = '12:30';
 const BREAKOUT_VOL_MULT = 1.1;
 const VOL_AVG_LOOKBACK = 5;
 
-export default function ChartModal({ date, symbol, onClose }) {
+export default function ChartModal({ date, symbol, baselineName, onClose }) {
+  const [searchParams] = useSearchParams();
+  /** URL ?baseline= wins when navigation state dropped; prop wins when set (e.g. Compare). */
+  const baselineForApi = baselineName ?? searchParams.get('baseline') ?? undefined;
+
   const [mode, setMode] = useState('3m');
   const [data, setData] = useState(null);
   const [dailyData, setDailyData] = useState(null);
@@ -42,8 +47,8 @@ export default function ChartModal({ date, symbol, onClose }) {
     setError('');
     setDailyData(null);
     setClickedBarReason(null);
-    api.getChart3m(date, symbol).then(setData).catch((e) => setError(e.message));
-  }, [date, symbol]);
+    api.getChart3m(date, symbol, baselineForApi).then(setData).catch((e) => setError(e.message));
+  }, [date, symbol, baselineForApi]);
 
   useEffect(() => {
     if (mode !== 'daily' || !symbol) return;
@@ -281,6 +286,14 @@ export default function ChartModal({ date, symbol, onClose }) {
         {mode === '3m' && data && (
           <p className="muted">
             Entry: {data.entry?.price?.toFixed(2)} · Stop: {data.stop?.toFixed(2)} · Exit: {data.exit?.price?.toFixed(2)} ({data.exit?.reason}) · Axis: IST
+            {data.baseline ? ` · Chart config: baseline “${data.baseline}”` : ''}
+            {baselineForApi && !data.baseline && (
+              <span style={{ color: '#c62828' }}>
+                {' '}
+                — Baseline “{baselineForApi}” was not applied by the API. Restart the dashboard Node process (port 4000)
+                so it runs the current code; otherwise the chart recomputes entry and will not match the table.
+              </span>
+            )}
           </p>
         )}
         {mode === '3m' && clickedBarReason && (

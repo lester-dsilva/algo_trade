@@ -106,7 +106,7 @@ export default function Compare() {
   const [baselineB, setBaselineB] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [chart, setChart] = useState(null); // { date, symbol }
+  const [chart, setChart] = useState(null); // { date, symbol, baselineName }
   const [onlyFilter, setOnlyFilter] = useState('new'); // 'new' | 'removed' | 'all'
   const [stratFilter, setStratFilter] = useState('all'); // 'all' | 'explosion' | 'v2_breakout'
 
@@ -371,7 +371,12 @@ export default function Compare() {
       )}
 
       {chart && (
-        <ChartModal date={chart.date} symbol={chart.symbol} onClose={() => setChart(null)} />
+        <ChartModal
+          date={chart.date}
+          symbol={chart.symbol}
+          baselineName={chart.baselineName}
+          onClose={() => setChart(null)}
+        />
       )}
     </div>
   );

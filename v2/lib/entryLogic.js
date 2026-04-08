@@ -2,9 +2,9 @@
  * v2 entry logic: 3m breakout after 4% move + pullback/consolidation.
  *
  * Conditions:
- * - 4% move up within opening segment: bars 0..moveWindowBars-1 (default 20 × 3m = 60 min from 09:15)
+ * - 4% move up within opening segment: bars 0..moveWindowBars-1 (default 11 × 3m ≈ 33m → first entry ~09:48 from 09:15)
  * - Pullback or consolidation after that; pullback ≥1% from segment high (or consolidation = last 5 bars range ≤2%); pullback from day high not more than 4%
- * - Entry evaluation starts at bar index moveWindowBars (default 20 ≈ 10:18; e.g. 11 ≈ 09:48). Min moveWindowBars = 5 (avg vol lookback).
+ * - Entry evaluation starts at bar index moveWindowBars (default 11 ≈ 09:48). Min moveWindowBars = 5 (avg vol lookback). Use 20 for ~60m segment (~10:18 first entry).
  * - Enter on breakout candle only; breakout candle must close above day's high (so far)
  * - No entry after 12:30
  * - Day volume: cumulative vs prev day — linear ramp to dayVolMult× by maxEntryTime (default 2.7× by 12:30), or flat if dayVolRamp is false
@@ -15,8 +15,11 @@
  * - Breakout close must be meaningfully above recent high (stronger breakout)
  */
 
-/** Default 3m bars for opening move + segment high (20 × 3m = 60 min from 09:15). */
+/** Legacy default segment length (20 × 3m = 60 min); used as numeric fallback only. Prefer ENTRY_DEFAULTS.moveWindowBars. */
 export const FIRST_HOUR_BAR_COUNT = 20;
+
+/** Default first entry bar index: 11 × 3m ≈ 33m after 09:15 → ~09:48 bar. */
+export const DEFAULT_MOVE_WINDOW_BARS = 11;
 
 export const GAP_UP_MAX_PCT = 3;
 const MOVE_UP_MIN_PCT = 4;
@@ -72,7 +75,7 @@ export function getDayVolRequiredCumulativeVolume(prevVol, barIndexZeroBased, to
  */
 export const ENTRY_DEFAULTS = {
   /** Bars 0..moveWindowBars-1 define segment for 4% move; first entry bar index is moveWindowBars (min VOL_AVG_LOOKBACK). */
-  moveWindowBars: FIRST_HOUR_BAR_COUNT,
+  moveWindowBars: DEFAULT_MOVE_WINDOW_BARS,
   gapUpMaxPct: GAP_UP_MAX_PCT,
   moveUpMinPct: MOVE_UP_MIN_PCT,
   pullbackPct: PULLBACK_PCT,
@@ -88,6 +91,38 @@ export const ENTRY_DEFAULTS = {
   breakoutVolMult: BREAKOUT_VOL_MULT,
   twoBarCombinedUpMaxPct: TWO_BAR_COMBINED_UP_MAX_PCT,
 };
+
+/** Keys from a saved baseline `config` that map to findEntry / runBacktest entry options. */
+export const ENTRY_CONFIG_KEYS = [
+  'moveWindowBars',
+  'gapUpMaxPct',
+  'moveUpMinPct',
+  'pullbackPct',
+  'pullbackMaxFromTopPct',
+  'wickMaxPct',
+  'consolidationRangePct',
+  'maxEntryTime',
+  'fixedSlPct',
+  'maxDayMovePct',
+  'breakoutStrengthMinPct',
+  'dayVolMult',
+  'dayVolRamp',
+  'breakoutVolMult',
+  'twoBarCombinedUpMaxPct',
+];
+
+/**
+ * @param {Record<string, unknown>} [config] - baseline.config from saved JSON
+ * @returns {Record<string, unknown>} opts to spread into findEntry / runBacktestForDate
+ */
+export function pickEntryOptsFromBaselineConfig(config) {
+  if (!config || typeof config !== 'object') return {};
+  const out = {};
+  for (const k of ENTRY_CONFIG_KEYS) {
+    if (config[k] !== undefined && config[k] !== null) out[k] = config[k];
+  }
+  return out;
+}
 
 /**
  * @param {Array<{ open, high, low, close, volume, time, date }>} bars - 3m bars for the day (sorted by time)

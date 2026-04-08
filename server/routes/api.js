@@ -15,8 +15,17 @@ import {
   load3mForSymbol,
   list3mSymbols,
 } from '../../v2/lib/loadBacktestData.js';
-import { runBacktestForDate } from '../../v2/scripts/runBacktest.js';
-import { findEntry, ENTRY_DEFAULTS, countBarsUpToMaxEntryTime } from '../../v2/lib/entryLogic.js';
+import {
+  runBacktestForDate,
+  getOneSymbolTradeForDate,
+  simulateTrade,
+} from '../../v2/scripts/runBacktest.js';
+import {
+  findEntry,
+  ENTRY_DEFAULTS,
+  countBarsUpToMaxEntryTime,
+  pickEntryOptsFromBaselineConfig,
+} from '../../v2/lib/entryLogic.js';
 import { sumChargesForTrades } from '../../lib/zerodhaCharges.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -551,7 +560,33 @@ apiRouter.get('/chart/daily', async (req, res) => {
   }
 });
 
-// GET /api/chart/3m?date=YYYY-MM-DD&symbol=SYMBOL
+/** Match baseline trade time to 3m bar index (HH:MM, leading zero tolerant). */
+function findBarIndexByTime(bars, timeStr) {
+  const normalize = (x) => {
+    const p = (x || '').trim().split(':');
+    if (p.length < 2) return (x || '').slice(0, 5);
+    const h = String(parseInt(p[0], 10)).padStart(2, '0');
+    const m = String(parseInt(p[1], 10)).padStart(2, '0');
+    return `${h}:${m}`;
+  };
+  const want = normalize(timeStr);
+  for (let i = 0; i < bars.length; i++) {
+    if (normalize(bars[i].time) === want) return i;
+  }
+  return -1;
+}
+
+function positionValueForBaselineTrade(blConfig, savedTrade) {
+  let pv = Number(blConfig?.capitalPerTrade);
+  if (!Number.isFinite(pv) || pv <= 0) pv = 50000;
+  const tiers = blConfig?.tiers;
+  if (Array.isArray(tiers) && tiers.length && savedTrade?.seqIndex != null) {
+    pv = tiers[Math.min(savedTrade.seqIndex, tiers.length - 1)];
+  }
+  return pv;
+}
+
+// GET /api/chart/3m?date=YYYY-MM-DD&symbol=SYMBOL&baseline=optional_baseline_name
 apiRouter.get('/chart/3m', (req, res) => {
   const date = req.query.date;
   const symbol = req.query.symbol;
@@ -563,6 +598,32 @@ apiRouter.get('/chart/3m', (req, res) => {
   }
   const norm = (s) => s.toLowerCase().replace(/&/g, '').replace(/\s/g, '');
   try {
+    const baselineQuery = req.query.baseline;
+    const baselineName =
+      typeof baselineQuery === 'string' && baselineQuery.trim()
+        ? sanitizeBaselineName(baselineQuery.trim())
+        : '';
+    let entryOpts = {};
+    let blConfig = {};
+    let baselineDoc = null;
+    if (baselineName) {
+      const filePath = path.join(BACKTEST_BASELINES_DIR, `${baselineName}.json`);
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        baselineDoc = JSON.parse(raw);
+        blConfig = baselineDoc.config || {};
+        entryOpts = pickEntryOptsFromBaselineConfig(blConfig);
+      }
+    }
+    const effective = { ...ENTRY_DEFAULTS, ...entryOpts };
+    const chartOpts = {
+      ...entryOpts,
+      firstTargetPct: blConfig.firstTargetPct,
+      trailPct: blConfig.trailPct,
+      capitalPerTrade: blConfig.capitalPerTrade,
+      tiers: blConfig.tiers,
+    };
+
     const bars = load3mForSymbol(date, symbol.trim());
     if (!bars || bars.length === 0) {
       return res.status(404).json({ error: 'No 3m data for this symbol on this date' });
@@ -579,16 +640,39 @@ apiRouter.get('/chart/3m', (req, res) => {
     }
     let failedBars = [];
     if (prev && prev.close > 0) {
-      const entryResult = findEntry(
-        bars,
-        { close: prev.close, volume: prev.volume || 0 },
-        { debug: true, moveWindowBars: ENTRY_DEFAULTS.moveWindowBars },
-      );
+      const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume || 0 }, { debug: true, ...entryOpts });
       if (entryResult?.failedBars?.length) failedBars = entryResult.failedBars;
     }
-    const out = runBacktestForDate(date, { quiet: true });
-    if (!out) return res.status(404).json({ error: 'No backtest results' });
-    const trade = out.results.find((r) => norm(r.symbol) === norm(symbol));
+
+    let trade = null;
+    const savedTrade = baselineDoc?.trades?.find(
+      (t) => t.date === date && norm(t.symbol) === norm(symbol),
+    );
+    if (savedTrade) {
+      const entryBarIndex = findBarIndexByTime(bars, savedTrade.time);
+      if (entryBarIndex >= 0) {
+        const pv = positionValueForBaselineTrade(blConfig, savedTrade);
+        const simOpts = { positionValue: pv };
+        if (blConfig.firstTargetPct != null) simOpts.firstTargetPct = blConfig.firstTargetPct;
+        if (blConfig.trailPct != null) simOpts.trailPct = blConfig.trailPct;
+        const sim = simulateTrade(bars, entryBarIndex, savedTrade.entry, savedTrade.stop, simOpts);
+        trade = {
+          symbol: savedTrade.symbol,
+          time: savedTrade.time,
+          entry: savedTrade.entry,
+          stop: savedTrade.stop,
+          barIndex: entryBarIndex,
+          exitReason: savedTrade.exitReason,
+          exitPrice: savedTrade.exitPrice,
+          exitBarIndex: sim.exitBarIndex,
+          pnl: savedTrade.pnl,
+          qty: savedTrade.qty,
+        };
+      }
+    }
+    if (!trade) {
+      trade = getOneSymbolTradeForDate(date, symbol.trim(), chartOpts);
+    }
     const entry = trade
       ? { price: trade.entry, barIndex: trade.barIndex }
       : null;
@@ -597,15 +681,26 @@ apiRouter.get('/chart/3m', (req, res) => {
       ? { price: trade.exitPrice, reason: trade.exitReason, barIndex: trade.exitBarIndex }
       : null;
     const prevDay = prev ? { volume: prev.volume || 0 } : null;
-    const totalBarsToMaxEntry = countBarsUpToMaxEntryTime(bars, ENTRY_DEFAULTS.maxEntryTime);
+    const totalBarsToMaxEntry = countBarsUpToMaxEntryTime(bars, effective.maxEntryTime);
     const entryParams = {
-      dayVolMult: ENTRY_DEFAULTS.dayVolMult,
-      dayVolRamp: ENTRY_DEFAULTS.dayVolRamp,
-      maxEntryTime: ENTRY_DEFAULTS.maxEntryTime,
+      dayVolMult: effective.dayVolMult,
+      dayVolRamp: effective.dayVolRamp,
+      maxEntryTime: effective.maxEntryTime,
       totalBarsToMaxEntry,
-      moveWindowBars: ENTRY_DEFAULTS.moveWindowBars,
+      moveWindowBars: effective.moveWindowBars,
     };
-    res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit, failedBars, prevDay, entryParams });
+    res.json({
+      date,
+      symbol: trade?.symbol || symbol.trim(),
+      bars,
+      entry,
+      stop,
+      exit,
+      failedBars,
+      prevDay,
+      entryParams,
+      baseline: baselineName || null,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

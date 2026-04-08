@@ -70,10 +70,13 @@ export async function getTrades(date) {
   return handleRes(r);
 }
 
-export async function getChart3m(date, symbol) {
-  const r = await fetch(
-    `${API}/chart/3m?date=${encodeURIComponent(date)}&symbol=${encodeURIComponent(symbol)}`
-  );
+export async function getChart3m(date, symbol, baselineName) {
+  const q = new URLSearchParams({
+    date,
+    symbol,
+  });
+  if (baselineName) q.set('baseline', baselineName);
+  const r = await fetch(`${API}/chart/3m?${q}`);
   return handleRes(r);
 }
 

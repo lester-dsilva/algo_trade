@@ -3,8 +3,11 @@
  *
  * Run from repo root:
  *   node v2/scripts/runBacktest.js 2026-02-18
+ *
+ * Optional (repo-root .env or shell): MOVE_WINDOW_BARS — same as live scanner; first entry bar index (default 20).
  */
 
+import 'dotenv/config';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -45,7 +48,7 @@ function resolveSymbol(prevDayOhlc, normalizedName) {
  * bars = full day 3m, entryBarIndex = bar index at which we entered (we enter at that bar's close).
  * Override firstTargetPct / trailPct via opts for comparison runs.
  */
-function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
+export function simulateTrade(bars, entryBarIndex, entry, stop, opts = {}) {
   const firstTargetPct = opts.firstTargetPct ?? FIRST_TARGET_PCT;
   const trailPct = opts.trailPct ?? TRAIL_PCT;
   const positionValue = opts.positionValue ?? POSITION_VALUE;
@@ -204,6 +207,67 @@ export function runBacktestForDate(backtestDate, opts = {}) {
   return { backtestDate, results: capped, totalPnl, trades: capped.length, wins, losses };
 }
 
+/**
+ * One symbol's simulated trade for a date — not subject to the 6-trade day cap.
+ * Used by the chart API so entry/exit markers always match findEntry for that symbol.
+ * opts: same as runBacktestForDate (entryOpts + firstTargetPct, trailPct, capitalPerTrade, tiers).
+ * tiers is ignored for exit price/barIndex (same as flat pv); only pnl/qty would differ.
+ */
+export function getOneSymbolTradeForDate(backtestDate, symbol, opts = {}) {
+  const {
+    firstTargetPct,
+    trailPct,
+    capitalPerTrade,
+    positionValue: positionValueOpt,
+    tiers: _tiers,
+    ...entryOpts
+  } = opts;
+
+  let pv = Number(capitalPerTrade ?? positionValueOpt);
+  if (!Number.isFinite(pv) || pv <= 0) pv = POSITION_VALUE;
+  const simOpts = { positionValue: pv };
+  if (firstTargetPct != null) simOpts.firstTargetPct = firstTargetPct;
+  if (trailPct != null) simOpts.trailPct = trailPct;
+
+  if (!hasBacktestData(backtestDate)) return null;
+  const prevDayOhlc = loadPrevDayOhlc(backtestDate);
+  if (!prevDayOhlc || prevDayOhlc.size === 0) return null;
+
+  const symNorm = normalizeFilename(symbol);
+  const sym = resolveSymbol(prevDayOhlc, symNorm);
+  if (!sym) return null;
+  const bars = load3mForSymbol(backtestDate, sym);
+  if (!bars || bars.length < 20) return null;
+  const prev = prevDayOhlc.get(sym);
+  if (!prev || prev.close <= 0) return null;
+
+  const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume }, entryOpts);
+  if (!entryResult) return null;
+
+  const sim = simulateTrade(bars, entryResult.barIndex, entryResult.entry, entryResult.stop, simOpts);
+  return {
+    symbol: sym,
+    time: entryResult.time,
+    entry: entryResult.entry,
+    stop: entryResult.stop,
+    barIndex: entryResult.barIndex,
+    exitReason: sim.exitReason,
+    exitPrice: sim.exitPrice,
+    exitBarIndex: sim.exitBarIndex,
+    pnl: sim.pnl,
+    qty: sim.qty,
+  };
+}
+
+/** Pass-through to findEntry when MOVE_WINDOW_BARS is set (integer; min 5 enforced inside findEntry). */
+function entryOptsFromEnv() {
+  const raw = process.env.MOVE_WINDOW_BARS;
+  if (raw == null || raw === '') return {};
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return {};
+  return { moveWindowBars: n };
+}
+
 function main() {
   const args = process.argv.slice(2);
   const dateArg = args.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
@@ -217,7 +281,12 @@ function main() {
     process.exit(1);
   }
 
-  const out = runBacktestForDate(dateArg, { quiet: false });
+  const envEntry = entryOptsFromEnv();
+  if (envEntry.moveWindowBars != null) {
+    console.error(`Using moveWindowBars=${envEntry.moveWindowBars} (MOVE_WINDOW_BARS in .env or environment)\n`);
+  }
+
+  const out = runBacktestForDate(dateArg, { quiet: false, ...envEntry });
   if (!out) {
     console.error('No prev_day_ohlc.csv or empty.');
     process.exit(1);

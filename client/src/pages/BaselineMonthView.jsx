@@ -74,7 +74,11 @@ export default function BaselineMonthView() {
                 <td>
                   <button
                     type="button"
-                    onClick={() => navigate(`/day/${row.date}`, { state: { fromBaseline: name } })}
+                    onClick={() =>
+                      navigate(`/day/${row.date}?baseline=${encodeURIComponent(name)}`, {
+                        state: { fromBaseline: name },
+                      })
+                    }
                   >
                     View day
                   </button>
