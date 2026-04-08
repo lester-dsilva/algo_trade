@@ -6,6 +6,8 @@ const DEFAULT_TIERS = [75000, 60000, 50000, 45000, 40000, 30000];
 
 // Default baseline config (match v2/entryLogic.js and v2/scripts/runBacktest.js)
 const BASELINE_CONFIG_DEFAULTS = {
+  /** 3m bars for opening move; first entry bar index (20 ≈ 60m, 11 ≈ 33m / ~09:48) */
+  moveWindowBars: 20,
   dayVolMult: 2.7,
   /** Linear ramp of required cum vol vs prev day to dayVolMult× by maxEntryTime */
   dayVolRamp: true,
@@ -364,6 +366,7 @@ export default function Home() {
                 <label style={{ marginLeft: 8 }}><input type="checkbox" checked={baselineConfig.dayVolRamp !== false} onChange={(e) => setConfigValue('dayVolRamp', e.target.checked)} /> ramp</label>
                 <label><span className="muted">Bar vol ≥ </span><input type="number" step="0.1" min="0" value={baselineConfig.breakoutVolMult} onChange={(e) => setConfigValue('breakoutVolMult', parseFloat(e.target.value) || 0)} style={{ width: 56, marginLeft: 4 }} />× avg 5</label>
                 <label style={{ gridColumn: '1 / -1', fontWeight: 600, marginTop: '0.5rem' }}>Entry — other</label>
+                <label style={{ gridColumn: '1 / -1' }}><span className="muted">Move window (3m bars)</span><input type="number" step="1" min="5" max="200" value={baselineConfig.moveWindowBars ?? 20} onChange={(e) => setConfigValue('moveWindowBars', Math.max(5, parseInt(e.target.value, 10) || 20))} style={{ width: 56, marginLeft: 4 }} /><span className="muted" style={{ marginLeft: 8, fontSize: '0.85rem' }}>Segment for 4% move; first entry bar index (20≈60m, 11≈~09:48)</span></label>
                 <label><span className="muted">Gap up max %</span><input type="number" step="0.5" value={baselineConfig.gapUpMaxPct} onChange={(e) => setConfigValue('gapUpMaxPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label><span className="muted">Move up min %</span><input type="number" step="0.5" value={baselineConfig.moveUpMinPct} onChange={(e) => setConfigValue('moveUpMinPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>
                 <label><span className="muted">Pullback %</span><input type="number" step="0.1" value={baselineConfig.pullbackPct} onChange={(e) => setConfigValue('pullbackPct', parseFloat(e.target.value) ?? 0)} style={{ width: 56, marginLeft: 4 }} /></label>

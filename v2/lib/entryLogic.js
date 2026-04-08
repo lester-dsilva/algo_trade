@@ -2,8 +2,9 @@
  * v2 entry logic: 3m breakout after 4% move + pullback/consolidation.
  *
  * Conditions:
- * - 4% move up within first 60 min: bars 0..19 (20 × 3m from 09:15; see FIRST_HOUR_BAR_COUNT)
- * - Pullback or consolidation after that; pullback ≥1% from first-hour high (or consolidation = last 5 bars range ≤2%); pullback from day high not more than 4%
+ * - 4% move up within opening segment: bars 0..moveWindowBars-1 (default 20 × 3m = 60 min from 09:15)
+ * - Pullback or consolidation after that; pullback ≥1% from segment high (or consolidation = last 5 bars range ≤2%); pullback from day high not more than 4%
+ * - Entry evaluation starts at bar index moveWindowBars (default 20 ≈ 10:18; e.g. 11 ≈ 09:48). Min moveWindowBars = 5 (avg vol lookback).
  * - Enter on breakout candle only; breakout candle must close above day's high (so far)
  * - No entry after 12:30
  * - Day volume: cumulative vs prev day — linear ramp to dayVolMult× by maxEntryTime (default 2.7× by 12:30), or flat if dayVolRamp is false
@@ -14,7 +15,7 @@
  * - Breakout close must be meaningfully above recent high (stronger breakout)
  */
 
-/** First hour of session in 3m bars: 20 × 3m = 60 min from market open (09:15). */
+/** Default 3m bars for opening move + segment high (20 × 3m = 60 min from 09:15). */
 export const FIRST_HOUR_BAR_COUNT = 20;
 
 export const GAP_UP_MAX_PCT = 3;
@@ -24,7 +25,7 @@ const PULLBACK_MAX_FROM_TOP_PCT = 4; // do not take if pullback is more than 4% 
 const WICK_MAX_PCT = 0.35;    // each wick at most 35% of candle range
 const VOL_AVG_LOOKBACK = 5;
 const BREAKOUT_VOL_MULT = 1.1; // allow breakouts with ≥1.1x avg(prev 5) so consolidation-breakout bars like 10:42 qualify
-const DAY_VOL_MULT = 2.7;     // terminal multiple vs prev day at maxEntryTime when dayVolRamp is true
+const DAY_VOL_MULT = 3;     // terminal multiple vs prev day at maxEntryTime when dayVolRamp is true
 /** When true (default), required cumulative vol vs prev day ramps linearly from bar 1 to dayVolMult× by maxEntryTime. */
 const DAY_VOL_RAMP_DEFAULT = true;
 const CONSOLIDATION_RANGE_PCT = 2;   // consolidation = range of last 5 bars <= 2% (includes 10:12–10:39 style)
@@ -70,6 +71,8 @@ export function getDayVolRequiredCumulativeVolume(prevVol, barIndexZeroBased, to
  * Default config keys that can be overridden via opts (e.g. when creating a baseline).
  */
 export const ENTRY_DEFAULTS = {
+  /** Bars 0..moveWindowBars-1 define segment for 4% move; first entry bar index is moveWindowBars (min VOL_AVG_LOOKBACK). */
+  moveWindowBars: FIRST_HOUR_BAR_COUNT,
   gapUpMaxPct: GAP_UP_MAX_PCT,
   moveUpMinPct: MOVE_UP_MIN_PCT,
   pullbackPct: PULLBACK_PCT,
@@ -110,12 +113,17 @@ export function findEntry(bars, prevDay, opts = {}) {
   const dayVolRamp = opts.dayVolRamp !== undefined ? opts.dayVolRamp : DAY_VOL_RAMP_DEFAULT;
   const breakoutVolMult = opts.breakoutVolMult ?? BREAKOUT_VOL_MULT;
   const twoBarCombinedUpMaxPct = opts.twoBarCombinedUpMaxPct ?? TWO_BAR_COMBINED_UP_MAX_PCT;
+  const rawMove = opts.moveWindowBars != null ? Number(opts.moveWindowBars) : ENTRY_DEFAULTS.moveWindowBars;
+  const moveWindowBars = Math.max(
+    VOL_AVG_LOOKBACK,
+    Math.min(Number.isFinite(rawMove) ? rawMove : FIRST_HOUR_BAR_COUNT, 200),
+  );
 
   function skip(reason) {
     if (debug && bar) failedBars.push({ time: (bar.time || '').slice(0, 5), reason });
   }
 
-  if (!bars || bars.length < FIRST_HOUR_BAR_COUNT + 1) return null;
+  if (!bars || bars.length < moveWindowBars + 1) return null;
   const dayOpen = bars[0].open;
   const prevClose = prevDay.close;
   const prevVol = prevDay.volume || 0;
@@ -123,7 +131,7 @@ export function findEntry(bars, prevDay, opts = {}) {
   const gapPct = prevClose > 0 ? ((dayOpen - prevClose) / prevClose) * 100 : 0;
   if (gapPct > gapUpMaxPct) return null;
 
-  const firstHourBars = bars.slice(0, FIRST_HOUR_BAR_COUNT);
+  const firstHourBars = bars.slice(0, moveWindowBars);
   const firstHourHigh = Math.max(...firstHourBars.map((b) => b.high));
   const movePct = dayOpen > 0 ? ((firstHourHigh - dayOpen) / dayOpen) * 100 : 0;
   if (movePct < moveUpMinPct) return null;
@@ -131,7 +139,7 @@ export function findEntry(bars, prevDay, opts = {}) {
   const totalBarsToMaxEntry = countBarsUpToMaxEntryTime(bars, maxEntryTime);
 
   let bar;
-  for (let i = FIRST_HOUR_BAR_COUNT; i < bars.length; i++) {
+  for (let i = moveWindowBars; i < bars.length; i++) {
     bar = bars[i];
     const barTime = (bar.time || '').slice(0, 5);
     if (barTime > maxEntryTime) { skip(`after ${maxEntryTime}`); continue; }
@@ -168,7 +176,7 @@ export function findEntry(bars, prevDay, opts = {}) {
       if (pullbackPctFromHigh > pullbackMaxFromTopPct) { skip(`pullback from high ${pullbackPctFromHigh.toFixed(1)}% > ${pullbackMaxFromTopPct}%`); continue; }
     }
     let hasPullback = false;
-    for (let j = FIRST_HOUR_BAR_COUNT; j < i; j++) {
+    for (let j = moveWindowBars; j < i; j++) {
       if (bars[j].low <= firstHourHigh * (1 - pullbackPct / 100)) {
         hasPullback = true;
         break;

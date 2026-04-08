@@ -20,7 +20,7 @@ function toBusinessDay(dateStr) {
   return { year: y, month: m, day: d };
 }
 
-const ENTRY_LOOP_START_BAR = 20;
+const DEFAULT_MOVE_WINDOW_BARS = 20;
 // Match v2/entryLogic.js for volume condition text (defaults; API may send entryParams)
 const DEFAULT_DAY_VOL_MULT = 2.7;
 const DEFAULT_DAY_VOL_RAMP = true;
@@ -96,6 +96,12 @@ export default function ChartModal({ date, symbol, onClose }) {
         if (t) failedBarsMap.set(t, fb.reason);
       });
 
+      const moveWindowBars = Math.max(
+        VOL_AVG_LOOKBACK,
+        data.entryParams?.moveWindowBars ?? DEFAULT_MOVE_WINDOW_BARS,
+      );
+      const firstEntryBarTime = (data.bars[moveWindowBars]?.time || '').slice(0, 5);
+
       chart.subscribeClick((param) => {
         if (param.time == null || param.seriesData?.size === 0) return;
         const i = chartBars.findIndex((b) => b.time === param.time);
@@ -105,8 +111,8 @@ export default function ChartModal({ date, symbol, onClose }) {
         let message;
         if (i === data.entry?.barIndex) {
           message = 'Entry bar';
-        } else if (i < ENTRY_LOOP_START_BAR) {
-          message = 'Before entry window (entry considered from 10:18)';
+        } else if (i < moveWindowBars) {
+          message = `Before entry window (first entry bar index ${moveWindowBars}${firstEntryBarTime ? `, ~${firstEntryBarTime}` : ''})`;
         } else {
           const reason = failedBarsMap.get(barTimeStr);
           message = reason ? `Why no entry: ${reason}` : 'No skip reason for this bar';

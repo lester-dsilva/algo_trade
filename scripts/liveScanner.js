@@ -2,7 +2,7 @@
  * Live scanner: subscribe to symbols from config/nse_mcap_above_900cr.csv,
  * build 3m candles from Kite ticks, run v2 entry logic on each new bar, persist paper positions, send Telegram alerts.
  *
- * v2 logic: 4% move in first 60 min (20×3m bars), pullback/consolidation, breakout (cum day vol ramps to 2.7× prev by 12:30, 1.1× breakout bar vs avg prev 5, gap ≤3%, wicks ≤35%).
+ * v2 logic: 4% move in opening segment (default 20×3m bars; MOVE_WINDOW_BARS env), pullback/consolidation, breakout (cum day vol ramps by maxEntryTime, 1.1× breakout bar vs avg prev 5, gap ≤3%, wicks ≤35%).
  * Exits: fixed SL 1.5% below entry (same as v2 entryLogic backtest); 3% first target then 1.5% trail; square-off 15:20 IST (LTP); bar EOD 15:24; 15:30 sweep fallback. Position size ₹20,000 (max 6 concurrent).
  *
  * Usage: node scripts/liveScanner.js
@@ -19,7 +19,7 @@ import path from 'path';
 import { getKite } from '../lib/kite.js';
 import { KiteTicker } from 'kiteconnect';
 import { createCandleBuilder } from '../lib/candleBuilder.js';
-import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../v2/lib/entryLogic.js';
+import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT, ENTRY_DEFAULTS } from '../v2/lib/entryLogic.js';
 import { addPosition, processBar, getTotalPnl, eodSweep, getOpenPositions, POSITION_VALUE, closeAllOpenAtPrices } from '../lib/positionStore.js';
 import { sendAlert, isConfigured as telegramConfigured } from '../lib/telegram.js';
 import { placeBuyOrder, placeSellOrder } from '../lib/orderExecutor.js';
@@ -32,6 +32,14 @@ const MAX_POSITIONS       = parseInt(process.env.MAX_POSITIONS || '6', 10);
 const LIVE_TIERED_SIZING  = process.env.LIVE_TIERED_SIZING === 'true';
 /** Stop distance below entry for live entries only (findEntry gets fixedSlPct override). */
 const LIVE_FIXED_SL_PCT   = 1.5;
+/** Match backtest: bars 0..moveWindowBars-1 for 4% segment; first entry index = moveWindowBars (env override). */
+const MOVE_WINDOW_BARS = Math.max(
+  5,
+  Math.min(
+    parseInt(process.env.MOVE_WINDOW_BARS || String(ENTRY_DEFAULTS.moveWindowBars), 10) || FIRST_HOUR_BAR_COUNT,
+    200,
+  ),
+);
 
 // Tier % allocation per trade sequence (must sum to 100; default: front-weighted 25/20/17/15/13/10)
 const LIVE_TIER_PCTS = process.env.LIVE_TIER_PCTS
@@ -141,15 +149,16 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   const MAX_DAY_MOVE_PCT = 14;
   const BREAKOUT_STRENGTH_MIN_PCT = 0.4;
 
-  if (!bars || bars.length < FIRST_HOUR_BAR_COUNT + VOL_AVG_LOOKBACK + 1) return null;
+  if (!bars || bars.length < MOVE_WINDOW_BARS + VOL_AVG_LOOKBACK + 1) return null;
 
   const i = bars.length - 1;
   const bar = bars[i];
+  if (i < MOVE_WINDOW_BARS) return null;
   const dayOpen = (officialDayOpen != null && officialDayOpen > 0) ? officialDayOpen : bars[0].open;
   const gapPct = prevClose > 0 ? ((dayOpen - prevClose) / prevClose) * 100 : 0;
   if (gapPct > GAP_UP_MAX_PCT) return null;
 
-  const firstHourBars = bars.slice(0, FIRST_HOUR_BAR_COUNT);
+  const firstHourBars = bars.slice(0, MOVE_WINDOW_BARS);
   const firstHourHigh = Math.max(...firstHourBars.map((b) => b.high));
   const movePct = dayOpen > 0 ? ((firstHourHigh - dayOpen) / dayOpen) * 100 : 0;
   if (movePct < MOVE_UP_MIN_PCT) return null;
@@ -179,7 +188,7 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   }
 
   let hasPullback = false;
-  for (let j = FIRST_HOUR_BAR_COUNT; j < i; j++) {
+  for (let j = MOVE_WINDOW_BARS; j < i; j++) {
     if (bars[j].low <= firstHourHigh * (1 - PULLBACK_PCT / 100)) {
       hasPullback = true;
       break;
@@ -599,7 +608,10 @@ async function main() {
             dayVolMultiple: pending.prevDay.volume > 0 ? Number((official.cumVol / pending.prevDay.volume).toFixed(3)) : null,
           });
 
-          const officialResult = findEntry(official.officialBars, pending.prevDay, { fixedSlPct: LIVE_FIXED_SL_PCT });
+          const officialResult = findEntry(official.officialBars, pending.prevDay, {
+            fixedSlPct: LIVE_FIXED_SL_PCT,
+            moveWindowBars: MOVE_WINDOW_BARS,
+          });
           const officialTime5 = (officialResult?.time || '').slice(0, 5);
           if (!officialResult || officialTime5 !== pending.barTime5) {
             console.error(`[ENTRY_SKIP] ${pending.symbol} @ ${pending.time} | historical volume available but entry not confirmed`);

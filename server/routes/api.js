@@ -579,7 +579,11 @@ apiRouter.get('/chart/3m', (req, res) => {
     }
     let failedBars = [];
     if (prev && prev.close > 0) {
-      const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume || 0 }, { debug: true });
+      const entryResult = findEntry(
+        bars,
+        { close: prev.close, volume: prev.volume || 0 },
+        { debug: true, moveWindowBars: ENTRY_DEFAULTS.moveWindowBars },
+      );
       if (entryResult?.failedBars?.length) failedBars = entryResult.failedBars;
     }
     const out = runBacktestForDate(date, { quiet: true });
@@ -599,6 +603,7 @@ apiRouter.get('/chart/3m', (req, res) => {
       dayVolRamp: ENTRY_DEFAULTS.dayVolRamp,
       maxEntryTime: ENTRY_DEFAULTS.maxEntryTime,
       totalBarsToMaxEntry,
+      moveWindowBars: ENTRY_DEFAULTS.moveWindowBars,
     };
     res.json({ date, symbol: trade?.symbol || symbol.trim(), bars, entry, stop, exit, failedBars, prevDay, entryParams });
   } catch (err) {
