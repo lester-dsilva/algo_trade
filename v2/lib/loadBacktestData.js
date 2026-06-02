@@ -73,6 +73,46 @@ export function load3mForSymbol(backtestDate, symbol) {
   return rows;
 }
 
+// Module cache: parsed prev_day_ohlc per folder (reused across dates in a backtest-all run).
+const _prevDayFolderCache = new Map();
+function loadPrevDayOhlcCached(folder) {
+  if (_prevDayFolderCache.has(folder)) return _prevDayFolderCache.get(folder);
+  const m = loadPrevDayOhlc(folder);
+  _prevDayFolderCache.set(folder, m);
+  return m;
+}
+
+/**
+ * Reconstruct a recent daily OHLC series per symbol for trend context at a backtest date.
+ * Unions prev_day_ohlc.csv from the most recent `lookback` date folders on or before
+ * backtestDate (each file holds the full universe's daily bar for the day before that folder),
+ * so every bar returned is strictly before backtestDate.
+ * @returns Map<symbol, Array<{ date, open, high, low, close, volume }>> sorted ascending by date.
+ */
+export function loadRecentDailyForDate(backtestDate, lookback = 40) {
+  if (!fs.existsSync(DATA_DIR)) return new Map();
+  const folders = fs.readdirSync(DATA_DIR)
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d <= backtestDate)
+    .sort()
+    .slice(-lookback);
+  const bySym = new Map(); // symbol -> Map<date, bar>
+  for (const folder of folders) {
+    const m = loadPrevDayOhlcCached(folder);
+    if (!m) continue;
+    for (const [sym, bar] of m) {
+      if (!bar.date) continue;
+      if (!bySym.has(sym)) bySym.set(sym, new Map());
+      const dm = bySym.get(sym);
+      if (!dm.has(bar.date)) dm.set(bar.date, bar);
+    }
+  }
+  const out = new Map();
+  for (const [sym, dm] of bySym) {
+    out.set(sym, [...dm.values()].sort((a, b) => a.date.localeCompare(b.date)));
+  }
+  return out;
+}
+
 /**
  * List symbols that have 3m data for the given backtest date.
  */

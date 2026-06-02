@@ -12,6 +12,16 @@
  * - Breakout candle volume >= 1.1x avg of previous 5 bars
  * - Fixed 1.5% SL below entry (always)
  * - Breakout close must be meaningfully above recent high (stronger breakout)
+ *
+ * Findings-based filters (config-gated, default on; pass opts to override):
+ * - minEntryTime: skip entries before 10:45. The 10:15–10:45 cohort is the worst
+ *   time bucket (win 36% / avg-R 0.14) and ~31% of all trades — early breakouts get faded.
+ * - trend dead-zone: skip symbols in a mild downtrend below their 20-day mean
+ *   (20d return in [-10%, 0) AND price below 20d SMA) — the ~breakeven "drifter" cohort.
+ *   Requires opts.trend = computeTrendFeatures(prior daily bars); skipped if trend absent.
+ * - liquidity floor: skip illiquid names whose avg 20-day turnover (₹ = close×volume) is below
+ *   minAvgTurnover (default ₹2cr/day). The relative 2.7× volume gate is blind to absolute liquidity
+ *   (e.g. VHL traded 326 shares the prior day yet passed "3.96×"). Skipped if trend absent.
  */
 
 /** First hour of session in 3m bars: 20 × 3m = 60 min from market open (09:15). */
@@ -31,6 +41,53 @@ const FIXED_SL_PCT = 1.5;             // fixed SL 1.5% below entry
 const MAX_DAY_MOVE_PCT = 14;          // skip entries if day move from open > 14% at entry
 const BREAKOUT_STRENGTH_MIN_PCT = 0.4; // close must be at least 0.4% above recent high
 const TWO_BAR_COMBINED_UP_MAX_PCT = 9; // skip if previous+current bar up% sum is too stretched
+const MIN_ENTRY_TIME = '10:45';        // findings: skip 10:15–10:45 breakouts (worst cohort). null disables.
+const TREND_FILTER = true;             // findings: skip mild-downtrend "drifter" dead-zone when trend context is provided
+const TREND_DEADZONE_RET20_MIN = -10;  // dead-zone lower bound for 20d return %
+const TREND_DEADZONE_RET20_MAX = 0;    // dead-zone upper bound for 20d return %
+const MIN_AVG_TURNOVER = 2e7;          // liquidity floor: require avg 20d turnover >= ₹2 crore/day (0 disables)
+
+/**
+ * Compute multi-day trend context from prior daily bars (sorted ascending, all strictly
+ * before the trade date). Pure function shared by backtest and live so they can't drift.
+ * @param {Array<{ date, open, high, low, close, volume }>} daily
+ * @returns {{ ret5, ret20, pctFrom20dHigh, distFromSMA20, sma5vs20, avgTurnover20, avgVol20 } | null}
+ */
+export function computeTrendFeatures(daily) {
+  if (!Array.isArray(daily) || daily.length < 5) return null;
+  const last = daily[daily.length - 1];
+  const closes = daily.map((b) => b.close);
+  const ago = (n) => (closes.length > n ? closes[closes.length - 1 - n] : null);
+  const ret = (n) => { const a = ago(n); return a && a > 0 ? ((last.close - a) / a) * 100 : null; };
+  const w20 = daily.slice(-20);
+  const hi20 = Math.max(...w20.map((b) => b.high));
+  const sma20 = w20.reduce((s, b) => s + b.close, 0) / w20.length;
+  const w5 = daily.slice(-5);
+  const sma5 = w5.reduce((s, b) => s + b.close, 0) / w5.length;
+  return {
+    ret5: ret(5),
+    ret20: ret(20),
+    pctFrom20dHigh: hi20 > 0 ? ((last.close - hi20) / hi20) * 100 : null,
+    distFromSMA20: sma20 > 0 ? ((last.close - sma20) / sma20) * 100 : null,
+    sma5vs20: sma20 > 0 ? ((sma5 - sma20) / sma20) * 100 : null,
+    avgTurnover20: w20.reduce((s, b) => s + b.close * (b.volume || 0), 0) / w20.length, // ₹ avg daily turnover
+    avgVol20: w20.reduce((s, b) => s + (b.volume || 0), 0) / w20.length,                // avg daily share volume
+  };
+}
+
+/**
+ * True when the symbol's trend sits in the empirical "dead zone": a mild downtrend
+ * drifting below its 20-day mean (worst-performing cohort, ~breakeven before costs).
+ */
+export function isTrendDeadZone(trend, opts = {}) {
+  if (!trend) return false;
+  const ret20 = trend.ret20;
+  const dist = trend.distFromSMA20;
+  if (ret20 == null || dist == null) return false;
+  const lo = opts.trendDeadzoneRet20Min ?? TREND_DEADZONE_RET20_MIN;
+  const hi = opts.trendDeadzoneRet20Max ?? TREND_DEADZONE_RET20_MAX;
+  return ret20 > lo && ret20 < hi && dist < 0;
+}
 
 /**
  * Default config keys that can be overridden via opts (e.g. when creating a baseline).
@@ -49,6 +106,9 @@ export const ENTRY_DEFAULTS = {
   dayVolMult: DAY_VOL_MULT,
   breakoutVolMult: BREAKOUT_VOL_MULT,
   twoBarCombinedUpMaxPct: TWO_BAR_COMBINED_UP_MAX_PCT,
+  minEntryTime: MIN_ENTRY_TIME,
+  trendFilter: TREND_FILTER,
+  minAvgTurnover: MIN_AVG_TURNOVER,
 };
 
 /**
@@ -74,12 +134,23 @@ export function findEntry(bars, prevDay, opts = {}) {
   const dayVolMult = opts.dayVolMult ?? DAY_VOL_MULT;
   const breakoutVolMult = opts.breakoutVolMult ?? BREAKOUT_VOL_MULT;
   const twoBarCombinedUpMaxPct = opts.twoBarCombinedUpMaxPct ?? TWO_BAR_COMBINED_UP_MAX_PCT;
+  // Use !== undefined (not ??) so an explicit null/'' disables the filter rather than falling back to the default.
+  const minEntryTime = opts.minEntryTime !== undefined ? opts.minEntryTime : MIN_ENTRY_TIME;
+  const trendFilter = opts.trendFilter ?? TREND_FILTER;
+  const minAvgTurnover = opts.minAvgTurnover !== undefined ? opts.minAvgTurnover : MIN_AVG_TURNOVER;
+  const trend = opts.trend ?? null;
 
   function skip(reason) {
     if (debug && bar) failedBars.push({ time: (bar.time || '').slice(0, 5), reason });
   }
 
   if (!bars || bars.length < FIRST_HOUR_BAR_COUNT + 1) return null;
+
+  // findings: skip mild-downtrend "drifter" dead-zone (whole-symbol gate; safe no-op if trend absent)
+  if (trendFilter && isTrendDeadZone(trend, opts)) return null;
+
+  // liquidity floor: skip illiquid names (avg 20d turnover below floor); safe no-op if daily context absent
+  if (minAvgTurnover > 0 && trend && trend.avgTurnover20 != null && trend.avgTurnover20 < minAvgTurnover) return null;
   const dayOpen = bars[0].open;
   const prevClose = prevDay.close;
   const prevVol = prevDay.volume || 0;
@@ -96,6 +167,7 @@ export function findEntry(bars, prevDay, opts = {}) {
   for (let i = FIRST_HOUR_BAR_COUNT; i < bars.length; i++) {
     bar = bars[i];
     const barTime = (bar.time || '').slice(0, 5);
+    if (minEntryTime && barTime < minEntryTime) { skip(`before ${minEntryTime}`); continue; }
     if (barTime > maxEntryTime) { skip(`after ${maxEntryTime}`); continue; }
 
     const dayMovePct = dayOpen > 0 ? ((bar.close - dayOpen) / dayOpen) * 100 : 0;

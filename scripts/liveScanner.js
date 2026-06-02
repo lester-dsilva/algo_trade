@@ -19,7 +19,7 @@ import path from 'path';
 import { getKite } from '../lib/kite.js';
 import { KiteTicker } from 'kiteconnect';
 import { createCandleBuilder } from '../lib/candleBuilder.js';
-import { findEntry, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../v2/lib/entryLogic.js';
+import { findEntry, computeTrendFeatures, isTrendDeadZone, FIRST_HOUR_BAR_COUNT, GAP_UP_MAX_PCT } from '../v2/lib/entryLogic.js';
 import { addPosition, processBar, getTotalPnl, eodSweep, getOpenPositions, POSITION_VALUE, closeAllOpenAtPrices } from '../lib/positionStore.js';
 import { sendAlert, isConfigured as telegramConfigured } from '../lib/telegram.js';
 import { placeBuyOrder, placeSellOrder } from '../lib/orderExecutor.js';
@@ -32,6 +32,13 @@ const MAX_POSITIONS       = parseInt(process.env.MAX_POSITIONS || '6', 10);
 const LIVE_TIERED_SIZING  = process.env.LIVE_TIERED_SIZING === 'true';
 /** Stop distance below entry for live entries only (findEntry gets fixedSlPct override). */
 const LIVE_FIXED_SL_PCT   = 1.5;
+
+// Findings-based filters (match v2 entryLogic defaults; override via env).
+// V2_MIN_ENTRY_TIME='' disables the early-entry filter; V2_TREND_FILTER='false' disables the dead-zone filter.
+const V2_MIN_ENTRY_TIME = process.env.V2_MIN_ENTRY_TIME != null ? process.env.V2_MIN_ENTRY_TIME : '10:45';
+const V2_TREND_FILTER   = process.env.V2_TREND_FILTER !== 'false';
+// Liquidity floor: min avg 20d turnover (₹). Default ₹2cr/day; V2_MIN_TURNOVER=0 disables.
+const V2_MIN_TURNOVER   = process.env.V2_MIN_TURNOVER != null ? parseFloat(process.env.V2_MIN_TURNOVER) : 2e7;
 
 // Tier % allocation per trade sequence (must sum to 100; default: front-weighted 25/20/17/15/13/10)
 const LIVE_TIER_PCTS = process.env.LIVE_TIER_PCTS
@@ -128,8 +135,14 @@ function buildHistoricalBars(candles, dateStr) {
 /** Detect whether the current just-closed bar qualifies on price structure alone (ignoring volume filters).
  *  When officialDayOpen is provided (from 9:20 API), use it — live bars can miss 09:15 so bars[0].open may be wrong.
  */
-function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen = null) {
+function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen = null, trend = null, minEntryTime = V2_MIN_ENTRY_TIME, trendFilter = V2_TREND_FILTER, minAvgTurnover = V2_MIN_TURNOVER) {
   if (!prevClose || prevClose <= 0) return null;
+
+  // findings: skip mild-downtrend "drifter" dead-zone (safe no-op if trend absent)
+  if (trendFilter && isTrendDeadZone(trend)) return null;
+
+  // liquidity floor: skip illiquid names (avg 20d turnover below floor; safe no-op if trend absent)
+  if (minAvgTurnover > 0 && trend && trend.avgTurnover20 != null && trend.avgTurnover20 < minAvgTurnover) return null;
 
   const MOVE_UP_MIN_PCT = 4;
   const PULLBACK_PCT = 1;
@@ -155,6 +168,7 @@ function findEntryIgnoringVolumeForCurrentBar(bars, prevClose, officialDayOpen =
   if (movePct < MOVE_UP_MIN_PCT) return null;
 
   const barTime = (bar.time || '').slice(0, 5);
+  if (minEntryTime && barTime < minEntryTime) return null;
   if (barTime > MAX_ENTRY_TIME) return null;
 
   const dayMovePct = dayOpen > 0 ? ((bar.close - dayOpen) / dayOpen) * 100 : 0;
@@ -361,11 +375,13 @@ async function main() {
   const gapUpThresholdPct = process.env.GAP_UP_THRESHOLD_PCT != null ? parseFloat(process.env.GAP_UP_THRESHOLD_PCT) : null;
   const prevCloseBySymbol = new Map();
   const prevDayVolumeBySymbol = new Map();   // from daily OHLCV API only (prev day volume)
+  const trendBySymbol = new Map();           // findings: multi-day trend context for dead-zone filter
   const dayOpenBySymbol = new Map();
   const CONCURRENCY = 5; // reduced to avoid Kite API rate limits
   const symbolsForPrevDay = [...symbolToToken.keys()];
   const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-  const rangeFromStr = dateMinusDays(todayStr, 7);
+  // 50 calendar days ≈ 35 trading days — enough history for 20-day trend features (was 7).
+  const rangeFromStr = dateMinusDays(todayStr, 50);
   const dayFrom = new Date(`${rangeFromStr}T00:00:00+05:30`);
   const dayTo = new Date(`${todayStr}T23:59:59+05:30`);
 
@@ -383,13 +399,20 @@ async function main() {
             const token = symbolToToken.get(symbol);
             const candles = await kite.getHistoricalData(token, 'day', dayFrom, dayTo, false, false);
             if (candles && candles.length > 0) {
+              const priorBars = [];
               for (const c of candles) {
                 const d = candleDateStr(c);
                 if (d < todayStr) {
                   prevCloseBySymbol.set(symbol, c.close);
                   prevDayVolumeBySymbol.set(symbol, c.volume ?? 0);
+                  priorBars.push({ date: d, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume ?? 0 });
                   set = true;
                 }
+              }
+              if (priorBars.length >= 5) {
+                priorBars.sort((a, b) => a.date.localeCompare(b.date));
+                const tf = computeTrendFeatures(priorBars);
+                if (tf) trendBySymbol.set(symbol, tf);
               }
             }
             if (!set) {
@@ -599,7 +622,13 @@ async function main() {
             dayVolMultiple: pending.prevDay.volume > 0 ? Number((official.cumVol / pending.prevDay.volume).toFixed(3)) : null,
           });
 
-          const officialResult = findEntry(official.officialBars, pending.prevDay, { fixedSlPct: LIVE_FIXED_SL_PCT });
+          const officialResult = findEntry(official.officialBars, pending.prevDay, {
+            fixedSlPct: LIVE_FIXED_SL_PCT,
+            minEntryTime: V2_MIN_ENTRY_TIME || null,
+            trend: pending.trend ?? null,
+            trendFilter: V2_TREND_FILTER,
+            minAvgTurnover: V2_MIN_TURNOVER,
+          });
           const officialTime5 = (officialResult?.time || '').slice(0, 5);
           if (!officialResult || officialTime5 !== pending.barTime5) {
             console.error(`[ENTRY_SKIP] ${pending.symbol} @ ${pending.time} | historical volume available but entry not confirmed`);
@@ -942,7 +971,8 @@ async function main() {
     }
     if (!skipEntry) {
       const officialDayOpen = dayOpenBySymbol.get(symbol);
-      const result = findEntryIgnoringVolumeForCurrentBar(todayBars, prevClose, officialDayOpen);
+      const trend = trendBySymbol.get(symbol) ?? null;
+      const result = findEntryIgnoringVolumeForCurrentBar(todayBars, prevClose, officialDayOpen, trend);
       const resultTime5 = (result?.time || '').slice(0, 5);
       const barTime5 = (time || '').slice(0, 5);
       if (result && resultTime5 === barTime5) {
@@ -955,6 +985,7 @@ async function main() {
             time,
             barTime5,
             prevDay,
+            trend,
             attempts: 0,
           });
           console.error(`[ENTRY_WAIT] ${symbol} @ ${time} | price structure matched, waiting for historical day volume + entry candle volume`);

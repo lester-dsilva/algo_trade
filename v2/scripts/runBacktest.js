@@ -12,8 +12,9 @@ import {
   load3mForSymbol,
   hasBacktestData,
   list3mSymbols,
+  loadRecentDailyForDate,
 } from '../lib/loadBacktestData.js';
-import { findEntry } from '../lib/entryLogic.js';
+import { findEntry, computeTrendFeatures } from '../lib/entryLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -134,6 +135,12 @@ export function runBacktestForDate(backtestDate, opts = {}) {
 
   if (!quiet) console.error(`Backtest ${backtestDate} | ${symbolsToTest.length} symbols (with prev + 3m)\n`);
 
+  // Daily context for trend dead-zone + liquidity filters. Built unless BOTH are explicitly off.
+  const liquidityOff = entryOpts.minAvgTurnover === 0 || entryOpts.minAvgTurnover === null;
+  const dailyBySymbol = (entryOpts.trendFilter === false && liquidityOff)
+    ? null
+    : loadRecentDailyForDate(backtestDate, 40);
+
   const signals = [];
   for (let i = 0; i < symbolsToTest.length; i++) {
     const symbol = symbolsToTest[i];
@@ -142,7 +149,8 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     const prev = prevDayOhlc.get(symbol);
     if (!prev || prev.close <= 0) continue;
 
-    const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume }, entryOpts);
+    const trend = dailyBySymbol ? computeTrendFeatures(dailyBySymbol.get(symbol)) : null;
+    const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume }, { ...entryOpts, trend });
     if (!entryResult) continue;
 
     signals.push({
