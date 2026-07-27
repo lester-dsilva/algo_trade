@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import * as api from '../api';
 
-const DEFAULT_TIERS = [75000, 60000, 50000, 45000, 40000, 30000];
+const DEFAULT_TIERS = [110000, 85000, 55000, 30000, 20000, 20000];
 
 // Default baseline config (match v2/entryLogic.js and v2/scripts/runBacktest.js)
 const BASELINE_CONFIG_DEFAULTS = {

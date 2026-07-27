@@ -40,10 +40,21 @@ const V2_TREND_FILTER   = process.env.V2_TREND_FILTER !== 'false';
 // Liquidity floor: min avg 20d turnover (₹). Default ₹2cr/day; V2_MIN_TURNOVER=0 disables.
 const V2_MIN_TURNOVER   = process.env.V2_MIN_TURNOVER != null ? parseFloat(process.env.V2_MIN_TURNOVER) : 2e7;
 
+// Smallcap-100 daily-downtrend SIZE-DOWN (mirrors v2 runBacktest): on days where the index closed below
+// its 50-day MA AND its 20-day MA is falling (both known at 09:15), size every trade down to this factor
+// of normal. The down-regime trades stay positive-EV so we keep taking them, just smaller. 1 disables.
+const SMALLCAP_TOKEN              = parseInt(process.env.SMALLCAP_TOKEN || '267017', 10);
+const LIVE_DOWNTREND_SIZE_FACTOR  = process.env.LIVE_DOWNTREND_SIZE_FACTOR != null ? parseFloat(process.env.LIVE_DOWNTREND_SIZE_FACTOR) : 0.5;
+
+// Smallcap-100 intraday market-regime gate (mirrors v2 entryLogic maxMarketDownPct): skip new entries
+// while the index is down more than this % vs YESTERDAY's index close, measured from the live index
+// level at the entry bar. 0 disables. No-op until the index ticks / prev close are available.
+const LIVE_MAX_MARKET_DOWN_PCT    = process.env.LIVE_MAX_MARKET_DOWN_PCT != null ? parseFloat(process.env.LIVE_MAX_MARKET_DOWN_PCT) : 1.0;
+
 // Tier % allocation per trade sequence (must sum to 100; default: front-weighted 25/20/17/15/13/10)
 const LIVE_TIER_PCTS = process.env.LIVE_TIER_PCTS
   ? process.env.LIVE_TIER_PCTS.split(',').map((v) => parseFloat(v.trim())).filter((v) => Number.isFinite(v) && v > 0)
-  : [25, 20, 17, 15, 13, 10];
+  : [34.4, 26.6, 17.2, 9.4, 6.2, 6.2]; // front-loaded: most days are 1-2 trades, slots 4-6 rarely fire
 
 // Capital to distribute. If set, tier amounts are auto-calculated: LIVE_CAPITAL × pct%.
 // Falls back to explicit LIVE_TIERS if LIVE_CAPITAL is not set.
@@ -55,7 +66,7 @@ const LIVE_TIERS = (() => {
   if (process.env.LIVE_TIERS) {
     return process.env.LIVE_TIERS.split(',').map((v) => Math.max(1000, parseInt(v.trim(), 10))).filter((v) => Number.isFinite(v) && v > 0);
   }
-  return [75000, 60000, 50000, 45000, 40000, 30000]; // last-resort default
+  return [110000, 85000, 55000, 30000, 20000, 20000]; // last-resort default (front-loaded; ₹320k full)
 })();
 
 /** File log for debugging when away during market hours. Logs to data/live_scanner.log by default. Set LIVE_SCANNER_LOG=0 to disable, or LOG_PATH for custom path. */
@@ -332,11 +343,44 @@ function loadPrevDayTailBars(symbol, prevInfo, nBars = 25) {
   return all.slice(-nBars);
 }
 
+/**
+ * Compute today's Smallcap-100 daily-downtrend size factor from the index's own daily closes (token
+ * SMALLCAP_TOKEN), using only closes STRICTLY BEFORE today (through yesterday) so it's known at 09:15.
+ * Mirrors v2/lib/loadBacktestData.js#loadSmallcapDailyTrend so live and backtest can't drift:
+ *   dist50  = (close[-1] - SMA50) / SMA50 * 100        (below the 50-day MA?)
+ *   slope20 = (SMA20[-1] - SMA20[-6]) / SMA20[-6] * 100 (is the 20-day MA falling?)
+ *   downtrend = dist50 < 0 AND slope20 < 0  → factor = downFactor, else 1.
+ * Returns { factor, isDown, dist50, slope20, prevClose, bars }. factor=1 on insufficient history/errors.
+ */
+async function computeSmallcapDowntrend(kite, todayStr, token, downFactor) {
+  const from = new Date(`${dateMinusDays(todayStr, 110)}T00:00:00+05:30`);
+  const to = new Date(`${todayStr}T23:59:59+05:30`);
+  const candles = await kite.getHistoricalData(token, 'day', from, to, false, false);
+  const closes = (candles || [])
+    .filter((c) => candleDateStr(c) < todayStr)
+    .sort((a, b) => candleDateStr(a).localeCompare(candleDateStr(b)))
+    .map((c) => c.close)
+    .filter((v) => Number.isFinite(v) && v > 0);
+  if (closes.length < 51) return { factor: 1, isDown: false, reason: 'insufficient_history', bars: closes.length, prevClose: closes.length ? closes[closes.length - 1] : null };
+  const sma = (n, end) => { let s = 0; for (let i = end - n + 1; i <= end; i++) s += closes[i]; return s / n; };
+  const last = closes.length - 1;
+  const prevClose = closes[last];
+  const ma50 = sma(50, last);
+  const ma20 = sma(20, last);
+  const ma20Prior = sma(20, last - 5);
+  const dist50 = ((prevClose - ma50) / ma50) * 100;
+  const slope20 = ((ma20 - ma20Prior) / ma20Prior) * 100;
+  const isDown = dist50 < 0 && slope20 < 0;
+  return { factor: isDown ? downFactor : 1, isDown, dist50, slope20, prevClose, bars: closes.length };
+}
+
 async function main() {
   logToFile('start', 'script started');
 
   // Startup summary
   console.error(`[CONFIG] LIVE_TRADING=${LIVE_TRADING} | MAX_POSITIONS=${MAX_POSITIONS} | LIVE_TIERED_SIZING=${LIVE_TIERED_SIZING}`);
+  console.error(`[CONFIG] Downtrend size-down: ${LIVE_DOWNTREND_SIZE_FACTOR === 1 ? 'OFF' : `×${LIVE_DOWNTREND_SIZE_FACTOR} on Smallcap-100 daily-downtrend days (token ${SMALLCAP_TOKEN})`}`);
+  console.error(`[CONFIG] Intraday market gate: ${LIVE_MAX_MARKET_DOWN_PCT > 0 ? `skip entries while Smallcap-100 < -${LIVE_MAX_MARKET_DOWN_PCT}% vs prev close` : 'OFF'}`);
   if (LIVE_TIERED_SIZING) {
     const tierStr = LIVE_TIERS.map((v, i) => `#${i + 1}:₹${v.toLocaleString('en-IN')}`).join(' | ');
     const totalCapital = LIVE_TIERS.reduce((s, v) => s + v, 0);
@@ -377,6 +421,12 @@ async function main() {
   const prevDayVolumeBySymbol = new Map();   // from daily OHLCV API only (prev day volume)
   const trendBySymbol = new Map();           // findings: multi-day trend context for dead-zone filter
   const dayOpenBySymbol = new Map();
+  // Smallcap-100 daily-downtrend size factor for today (1 = full size until computed / on up days).
+  let daySizeFactor = 1;
+  // Smallcap-100 intraday regime: live index level (from ticker) vs yesterday's index close (from the
+  // daily fetch). Both null until ready → the intraday market gate no-ops (entry allowed).
+  let smallcapLtp = null;
+  let smallcapPrevClose = null;
   const CONCURRENCY = 5; // reduced to avoid Kite API rate limits
   const symbolsForPrevDay = [...symbolToToken.keys()];
   const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -459,6 +509,34 @@ async function main() {
     console.error('Prev day fetch failed:', e?.message);
     logToFile('prev_day_fatal', e?.message);
   });
+
+  // Smallcap-100 regime (background; one daily-candle call). Feeds BOTH the daily size-down factor and
+  // the intraday gate's prev-close. Entries don't fire before 10:45, so this resolves well in time.
+  // Stays at full size (1) / no-op gate until ready or on errors.
+  const fetchSmallcapRegime = async () => {
+    const needFactor = LIVE_DOWNTREND_SIZE_FACTOR !== 1;
+    const needGate = LIVE_MAX_MARKET_DOWN_PCT > 0;
+    if (!needFactor && !needGate) {
+      console.error('[REGIME] smallcap regime disabled (size-down off & market gate off)');
+      return;
+    }
+    try {
+      const info = await computeSmallcapDowntrend(kite, todayStr, SMALLCAP_TOKEN, LIVE_DOWNTREND_SIZE_FACTOR);
+      if (needFactor) daySizeFactor = info.factor;
+      if (info.prevClose != null) smallcapPrevClose = info.prevClose;
+      const d50 = info.dist50 != null ? info.dist50.toFixed(2) : '?';
+      const s20 = info.slope20 != null ? info.slope20.toFixed(2) : '?';
+      console.error(`[REGIME] Smallcap-100 daily trend: dist50=${d50}% slope20=${s20}% (${info.bars} closes) → ${info.isDown ? 'DOWNTREND' : 'up/neutral'} | size factor ${daySizeFactor} | prevClose=${smallcapPrevClose ?? '?'}`);
+      logToFile('regime', info);
+      if (needFactor && info.isDown) {
+        await sendAlert(`Smallcap-100 in a daily DOWNTREND (below 50-day MA & 20-day MA falling). Sizing today's trades down to ${Math.round(daySizeFactor * 100)}% of normal.`);
+      }
+    } catch (e) {
+      console.error('[REGIME] smallcap regime fetch failed (full size, gate no-op):', e?.message);
+      logToFile('regime_fatal', e?.message ?? String(e));
+    }
+  };
+  fetchSmallcapRegime();
 
   const todayFrom = new Date(`${todayStr}T00:00:00+05:30`);
   const todayTo = new Date(`${todayStr}T23:59:59+05:30`);
@@ -667,11 +745,14 @@ async function main() {
           const stop = officialResult.stop;
           const firstTargetPrice = Math.round(entryPrice * 1.03 * 100) / 100;
           const slPct = entryPrice > 0 ? ((entryPrice - stop) / entryPrice * 100).toFixed(2) : '?';
-          const qty = Math.floor(POSITION_VALUE / entryPrice);
-
-          const tierPv = LIVE_TIERED_SIZING
+          // Position size: tier by sequence (if enabled), then scale by today's downtrend factor
+          // (0.5 on Smallcap-100 daily-downtrend days; 1 otherwise / until the regime fetch resolves).
+          const baseTierPv = LIVE_TIERED_SIZING
             ? LIVE_TIERS[Math.min(dailyTradeCount, LIVE_TIERS.length - 1)]
             : undefined;
+          const tierPv = daySizeFactor !== 1
+            ? Math.max(1000, Math.round((baseTierPv ?? POSITION_VALUE) * daySizeFactor))
+            : baseTierPv;
 
           const pos = addPosition({
             symbol: pending.symbol,
@@ -683,10 +764,11 @@ async function main() {
             signalType: 'v2_breakout',
             ...(tierPv !== undefined && { positionValue: tierPv }),
           });
+          const qty = pos.qty;
 
           dailyTradeCount++;
 
-          const msg = `[ENTRY] ${pending.symbol} #${pos.id} @ ${pending.time} | entry=${entryPrice} SL=${stop} (${slPct}%) 3%→trail | qty=${pos.qty}${LIVE_TIERED_SIZING ? ` | tier=${tierPv}` : ''} | cumVol=${official.cumVol} | entryBarVol=${official.entryBar.volume} | volume=historical_api`;
+          const msg = `[ENTRY] ${pending.symbol} #${pos.id} @ ${pending.time} | entry=${entryPrice} SL=${stop} (${slPct}%) 3%→trail | qty=${pos.qty}${LIVE_TIERED_SIZING ? ` | tier=${tierPv}` : ''}${daySizeFactor !== 1 ? ` | downtrend×${daySizeFactor}` : ''} | cumVol=${official.cumVol} | entryBarVol=${official.entryBar.volume} | volume=historical_api`;
           console.error(msg);
           logToFile('entry', {
             symbol: pending.symbol,
@@ -704,6 +786,8 @@ async function main() {
             dayVolMultiple: pending.prevDay.volume > 0 ? Number((official.cumVol / pending.prevDay.volume).toFixed(3)) : null,
             volumeSource: 'historical_api',
             attempts: pending.attempts,
+            sizeFactor: daySizeFactor,
+            tierPv: tierPv ?? null,
           });
           if (!telegramConfigured()) {
             logToFile('telegram_skip', { reason: 'not_configured', symbol: pending.symbol, time: pending.time, msg: 'Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env' });
@@ -842,6 +926,12 @@ async function main() {
         ticks: tickCount,
         pending_volume_checks: pendingVolumeChecks.size,
         volume_debug: { cumulative_diff: volumeDebugCumulative, sum_quantity: volumeDebugSum },
+        smallcap: {
+          ltp: smallcapLtp,
+          prevClose: smallcapPrevClose,
+          pct: (smallcapLtp && smallcapPrevClose) ? Number((((smallcapLtp - smallcapPrevClose) / smallcapPrevClose) * 100).toFixed(2)) : null,
+          sizeFactor: daySizeFactor,
+        },
         ...t,
       });
     }
@@ -976,6 +1066,16 @@ async function main() {
       const resultTime5 = (result?.time || '').slice(0, 5);
       const barTime5 = (time || '').slice(0, 5);
       if (result && resultTime5 === barTime5) {
+        // intraday market-regime gate: skip while Smallcap-100 is deeply red vs prev close at this bar.
+        // No-op until the index level / prev close are available (matches backtest's "no regime data" case).
+        if (LIVE_MAX_MARKET_DOWN_PCT > 0 && smallcapPrevClose && smallcapLtp) {
+          const mPct = ((smallcapLtp - smallcapPrevClose) / smallcapPrevClose) * 100;
+          if (mPct < -LIVE_MAX_MARKET_DOWN_PCT) {
+            console.error(`[ENTRY_SKIP] ${symbol} @ ${time} | market gate: Smallcap-100 ${mPct.toFixed(2)}% < -${LIVE_MAX_MARKET_DOWN_PCT}% vs prev close`);
+            logToFile('skip', { symbol, date, time, reason: `market_${mPct.toFixed(2)}pct < -${LIVE_MAX_MARKET_DOWN_PCT}pct`, smallcapLtp, smallcapPrevClose });
+            return;
+          }
+        }
         const key = `${symbol}|${date}|v2_breakout|${time}`;
         if (!signaled.has(key) && !pendingVolumeChecks.has(key) && !hasPendingEntryForSymbolDate(symbol, date)) {
           const liveCumVol = todayBars.reduce((s, b) => s + (b.volume ?? 0), 0);
@@ -1036,6 +1136,10 @@ async function main() {
     tickCount += ticks.length;
     for (const t of ticks) {
       const token = typeof t.instrument_token === 'number' ? t.instrument_token : Number(t.instrument_token);
+      if (token === SMALLCAP_TOKEN) {
+        if (Number.isFinite(t.last_price) && t.last_price > 0) smallcapLtp = t.last_price;
+        continue;
+      }
       const symbol = tokenToSymbol.get(token);
       if (!symbol) continue;
       const ts = t.exchange_timestamp || t.last_trade_time;
@@ -1045,9 +1149,12 @@ async function main() {
   });
 
   ticker.on('connect', () => {
-    ticker.subscribe(tokens);
-    ticker.setMode(ticker.modeFull, tokens);
-    const msg = `subscribed to ${tokens.length} tokens`;
+    // Also subscribe the Smallcap-100 index (for the intraday gate / regime) when either feature is on.
+    const trackIndex = LIVE_MAX_MARKET_DOWN_PCT > 0 || LIVE_DOWNTREND_SIZE_FACTOR !== 1;
+    const subTokens = trackIndex ? [...tokens, SMALLCAP_TOKEN] : tokens;
+    ticker.subscribe(subTokens);
+    ticker.setMode(ticker.modeFull, subTokens);
+    const msg = `subscribed to ${subTokens.length} tokens${trackIndex ? ` (incl. Smallcap-100 index ${SMALLCAP_TOKEN})` : ''}`;
     console.error('Connected. Building 3m bars; signals will be logged and sent to Telegram if configured.');
     if (LOG_VOLUME_ENABLED) {
       console.error('Volume debug: logging each bar flush (volume, cumulative_diff vs sum_quantity) to', LOG_VOLUME_PATH);

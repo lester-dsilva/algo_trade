@@ -113,6 +113,99 @@ export function loadRecentDailyForDate(backtestDate, lookback = 40) {
   return out;
 }
 
+// Module cache: market-wide intraday cumulative-volume profile (time HH:MM -> avg fraction of day done).
+let _volProfile = null;
+export function loadIntradayVolProfile() {
+  if (_volProfile !== null) return _volProfile;
+  const f = path.join(DATA_DIR, 'intraday_vol_profile.json');
+  if (!fs.existsSync(f)) { _volProfile = null; return null; }
+  try {
+    const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+    _volProfile = j.profile || null;
+  } catch { _volProfile = null; }
+  return _volProfile;
+}
+
+let _smallcapRegime = null;
+/**
+ * Load the intraday Smallcap-100 market-regime map for the gap-aware "skip when smallcap is red" gate.
+ * Built from v2/data/smallcap100_3m.json (3-MINUTE index OHLC) so the intraday level is read at the
+ * SAME granularity as the stock entry bar — the entry bar's index 3-min close. prevClose comes from the
+ * OFFICIAL daily file (loadSmallcapDailyTrend) so the reference matches the live scanner's 'day' candle
+ * close. Returns Map<date, { prevClose, bars: [{ tmin, close }] }> or null if the 3m file is missing.
+ * Cached after first load. Dates not present resolve to undefined → the gate no-ops (trade allowed).
+ */
+export function loadSmallcapRegime() {
+  if (_smallcapRegime !== null) return _smallcapRegime;
+  const f = path.join(DATA_DIR, 'smallcap100_3m.json');
+  if (!fs.existsSync(f)) { _smallcapRegime = null; return null; }
+  try {
+    const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+    const dailyTrend = loadSmallcapDailyTrend(); // official prev-close per date (matches live)
+    const byDay = new Map();
+    for (const r of j.candles || []) {
+      if (!byDay.has(r.date)) byDay.set(r.date, []);
+      byDay.get(r.date).push(r);
+    }
+    const toMin = (t) => { const [h, m] = t.slice(0, 5).split(':').map(Number); return h * 60 + m; };
+    const map = new Map();
+    let prevCloseFallback = null; // 3m last bar of prior day, only if the daily file lacks the date
+    for (const date of [...byDay.keys()].sort()) {
+      const bars = byDay.get(date).slice().sort((a, b) => a.time.localeCompare(b.time));
+      const officialPrev = dailyTrend?.get(date)?.prevClose;
+      const prevClose = officialPrev != null ? officialPrev : prevCloseFallback;
+      map.set(date, { prevClose, bars: bars.map((b) => ({ tmin: toMin(b.time), close: b.close })) });
+      prevCloseFallback = bars[bars.length - 1].close;
+    }
+    _smallcapRegime = map;
+  } catch { _smallcapRegime = null; }
+  return _smallcapRegime;
+}
+
+let _smallcapDailyTrend = null;
+/**
+ * Load the Smallcap-100 DAILY-trend map for the daily-downtrend size-down.
+ * Built from v2/data/smallcap100_daily.json — the index's OFFICIAL daily (15:30) closes, the SAME source
+ * the live scanner uses (kite 'day' candles), so backtest and live build an identical MA. Using only
+ * closes STRICTLY BEFORE date D (through D-1, known at D's 09:15):
+ *   dist50  = (close[D-1] - SMA50[through D-1]) / SMA50 * 100   (how far above/below the 50-day MA)
+ *   slope20 = (SMA20[through D-1] - SMA20[through D-6]) / SMA20[through D-6] * 100   (5-day MA slope)
+ * Returns Map<date, { prevClose, dist50, slope20 }> or null if the file is missing. Cached after first
+ * load. Dates without 50 prior closes (warmup) or not in the file resolve to undefined → gate no-ops.
+ */
+export function loadSmallcapDailyTrend() {
+  if (_smallcapDailyTrend !== null) return _smallcapDailyTrend;
+  const f = path.join(DATA_DIR, 'smallcap100_daily.json');
+  if (!fs.existsSync(f)) { _smallcapDailyTrend = null; return null; }
+  try {
+    const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+    const rows = (j.candles || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+    const dates = rows.map((r) => r.date);
+    const closes = rows.map((r) => r.close);
+    const sma = (endIdx, n) => {
+      if (endIdx + 1 < n) return null;
+      let s = 0;
+      for (let i = endIdx - n + 1; i <= endIdx; i++) s += closes[i];
+      return s / n;
+    };
+    const map = new Map();
+    for (let k = 1; k < dates.length; k++) {
+      const prev = k - 1; // index of D-1
+      const prevClose = closes[prev];
+      const ma50 = sma(prev, 50);
+      const ma20 = sma(prev, 20);
+      const ma20Prior = sma(prev - 5, 20);
+      map.set(dates[k], {
+        prevClose,
+        dist50: ma50 ? ((prevClose - ma50) / ma50) * 100 : null,
+        slope20: ma20 && ma20Prior ? ((ma20 - ma20Prior) / ma20Prior) * 100 : null,
+      });
+    }
+    _smallcapDailyTrend = map;
+  } catch { _smallcapDailyTrend = null; }
+  return _smallcapDailyTrend;
+}
+
 /**
  * List symbols that have 3m data for the given backtest date.
  */

@@ -13,6 +13,9 @@ import {
   hasBacktestData,
   list3mSymbols,
   loadRecentDailyForDate,
+  loadIntradayVolProfile,
+  loadSmallcapRegime,
+  loadSmallcapDailyTrend,
 } from '../lib/loadBacktestData.js';
 import { findEntry, computeTrendFeatures } from '../lib/entryLogic.js';
 
@@ -141,6 +144,26 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     ? null
     : loadRecentDailyForDate(backtestDate, 40);
 
+  // Intraday volume pace profile (only needed when volMode === 'pace'); cached after first load.
+  const volProfile = entryOpts.volMode === 'pace' ? loadIntradayVolProfile() : null;
+
+  // Smallcap-100 market-regime gate (skip entries while the index is deeply red vs prev close).
+  // Loaded/passed unless explicitly disabled with maxMarketDownPct: 0. No-op if the file/date is missing.
+  const marketFilterOff = entryOpts.maxMarketDownPct === 0 || entryOpts.maxMarketDownPct === null;
+  const smallcapRegimeMap = marketFilterOff ? null : loadSmallcapRegime();
+  const marketRegime = smallcapRegimeMap ? smallcapRegimeMap.get(backtestDate) || null : null;
+
+  // Smallcap-100 DAILY-downtrend SIZE-DOWN: on confirmed downtrend days (index closed below its 50d MA
+  // AND its 20d MA is falling, both known at 09:15) trade at downtrendSizeFactor × normal size. The
+  // down-regime trades stay positive-EV (~₹299/trade) so we keep taking them, just smaller. 1 disables.
+  // No-op if the trend file/date is missing (full size). Configurable via opts.downtrendSizeFactor.
+  const downtrendSizeFactor = Number.isFinite(entryOpts.downtrendSizeFactor) ? entryOpts.downtrendSizeFactor : 0.5;
+  const smallcapTrendMap = downtrendSizeFactor === 1 ? null : loadSmallcapDailyTrend();
+  const marketTrend = smallcapTrendMap ? smallcapTrendMap.get(backtestDate) || null : null;
+  const isDowntrendDay = !!(marketTrend && marketTrend.dist50 != null && marketTrend.slope20 != null
+    && marketTrend.dist50 < 0 && marketTrend.slope20 < 0);
+  const daySizeFactor = isDowntrendDay ? downtrendSizeFactor : 1;
+
   const signals = [];
   for (let i = 0; i < symbolsToTest.length; i++) {
     const symbol = symbolsToTest[i];
@@ -150,7 +173,7 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     if (!prev || prev.close <= 0) continue;
 
     const trend = dailyBySymbol ? computeTrendFeatures(dailyBySymbol.get(symbol)) : null;
-    const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume }, { ...entryOpts, trend });
+    const entryResult = findEntry(bars, { close: prev.close, volume: prev.volume }, { ...entryOpts, trend, volProfile, marketRegime });
     if (!entryResult) continue;
 
     signals.push({
@@ -191,15 +214,18 @@ export function runBacktestForDate(backtestDate, opts = {}) {
     .slice(0, maxTradesPerDay)
     .map((r, i) => ({ ...r, seqIndex: i }));
 
-  // If tiers provided, re-simulate each capped trade with its sequence-specific position value
-  if (Array.isArray(tiers) && tiers.length > 0) {
+  // Final position sizing. Re-simulate each capped trade at its real position value when tiers are
+  // given (sequence-specific ₹) and/or the day is a downtrend day (× daySizeFactor). Capping/ordering
+  // above used full pv, so size-down only scales rupees risked, never which trades are taken.
+  const useTiers = Array.isArray(tiers) && tiers.length > 0;
+  if (useTiers || daySizeFactor !== 1) {
     for (let i = 0; i < capped.length; i++) {
-      const tierPv = tiers[Math.min(i, tiers.length - 1)];
-      const bars = load3mForSymbol(backtestDate, capped[i].symbol);
-      const tierSim = simulateTrade(bars, capped[i].barIndex, capped[i].entry, capped[i].stop, {
-        ...simOpts,
-        positionValue: tierPv,
-      });
+      const baseTierPv = useTiers ? tiers[Math.min(i, tiers.length - 1)] : pv;
+      const tierSim = simulateTrade(
+        load3mForSymbol(backtestDate, capped[i].symbol),
+        capped[i].barIndex, capped[i].entry, capped[i].stop,
+        { ...simOpts, positionValue: baseTierPv * daySizeFactor },
+      );
       capped[i].pnl = tierSim.pnl;
       capped[i].qty = tierSim.qty;
     }

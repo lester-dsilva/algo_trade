@@ -22,6 +22,17 @@
  * - liquidity floor: skip illiquid names whose avg 20-day turnover (₹ = close×volume) is below
  *   minAvgTurnover (default ₹2cr/day). The relative 2.7× volume gate is blind to absolute liquidity
  *   (e.g. VHL traded 326 shares the prior day yet passed "3.96×"). Skipped if trend absent.
+ * - VWAP extension ceiling: skip breakouts whose entry sits more than maxVwapExtPct above the day's
+ *   intraday VWAP (volume-weighted from 09:15). Stretched-from-VWAP breakouts fade (entries >5% above
+ *   VWAP went negative in test). Fully intraday — VWAP is computed from the bars passed in; no daily data.
+ * - market regime gate: skip breakouts taken while the Smallcap-100 index is down more than
+ *   maxMarketDownPct vs its previous close at the entry time. Smallcap breadth is the right gauge for
+ *   this small/midcap universe (~2.6× the signal of Nifty); deep-red-index breakouts (≤ -1%) are
+ *   net-losing after costs (67% stop). Requires opts.marketRegime = { prevClose, bars:[{tmin, close}] }
+ *   for the trade's date; no-op if regime data is absent (so existing callers are unaffected).
+ *
+ * Position SIZING by daily market trend (Smallcap-100 below 50d MA AND 20d MA falling) is handled in
+ * the caller (runBacktest / live), NOT here — entryLogic only decides whether to enter, not how big.
  */
 
 /** First hour of session in 3m bars: 20 × 3m = 60 min from market open (09:15). */
@@ -46,6 +57,8 @@ const TREND_FILTER = true;             // findings: skip mild-downtrend "drifter
 const TREND_DEADZONE_RET20_MIN = -10;  // dead-zone lower bound for 20d return %
 const TREND_DEADZONE_RET20_MAX = 0;    // dead-zone upper bound for 20d return %
 const MIN_AVG_TURNOVER = 2e7;          // liquidity floor: require avg 20d turnover >= ₹2 crore/day (0 disables)
+const MAX_VWAP_EXT_PCT = 5;            // intraday: skip breakouts entering >5% above the day's VWAP (0 disables)
+const MAX_MARKET_DOWN_PCT = 1.0;      // skip entries while Smallcap-100 is down > this % vs prev close at entry time (0 disables; no-op without marketRegime)
 
 /**
  * Compute multi-day trend context from prior daily bars (sorted ascending, all strictly
@@ -109,7 +122,19 @@ export const ENTRY_DEFAULTS = {
   minEntryTime: MIN_ENTRY_TIME,
   trendFilter: TREND_FILTER,
   minAvgTurnover: MIN_AVG_TURNOVER,
+  maxVwapExtPct: MAX_VWAP_EXT_PCT,
+  maxMarketDownPct: MAX_MARKET_DOWN_PCT,
 };
+
+/** Market/index % vs prev close at clock time hh:mm using hourly regime bars (no lookahead). */
+function marketPctAt(regime, hhmm) {
+  if (!regime || regime.prevClose == null || !regime.bars || !regime.bars.length) return null;
+  const [h, m] = hhmm.split(':').map(Number);
+  const em = h * 60 + m;
+  let close = regime.bars[0].close;
+  for (const b of regime.bars) { if (b.tmin <= em) close = b.close; else break; }
+  return ((close - regime.prevClose) / regime.prevClose) * 100;
+}
 
 /**
  * @param {Array<{ open, high, low, close, volume, time, date }>} bars - 3m bars for the day (sorted by time)
@@ -138,6 +163,14 @@ export function findEntry(bars, prevDay, opts = {}) {
   const minEntryTime = opts.minEntryTime !== undefined ? opts.minEntryTime : MIN_ENTRY_TIME;
   const trendFilter = opts.trendFilter ?? TREND_FILTER;
   const minAvgTurnover = opts.minAvgTurnover !== undefined ? opts.minAvgTurnover : MIN_AVG_TURNOVER;
+  const maxVwapExtPct = opts.maxVwapExtPct ?? MAX_VWAP_EXT_PCT;
+  const maxMarketDownPct = opts.maxMarketDownPct ?? MAX_MARKET_DOWN_PCT;
+  const marketRegime = opts.marketRegime ?? null;
+  // Volume gate mode: 'fullday' = cumVol >= dayVolMult × prevDayFullVol (original);
+  // 'pace' = cumVol >= paceVolMult × profile[time] × prevDayFullVol (running hot vs normal pace for this clock time).
+  const volMode = opts.volMode ?? 'fullday';
+  const paceVolMult = opts.paceVolMult ?? dayVolMult;
+  const volProfile = opts.volProfile ?? null;
   const trend = opts.trend ?? null;
 
   function skip(reason) {
@@ -170,11 +203,27 @@ export function findEntry(bars, prevDay, opts = {}) {
     if (minEntryTime && barTime < minEntryTime) { skip(`before ${minEntryTime}`); continue; }
     if (barTime > maxEntryTime) { skip(`after ${maxEntryTime}`); continue; }
 
+    // market regime gate: skip while the Smallcap-100 index is deeply red vs prev close at this time.
+    // No-op when regime data is absent (keeps existing callers / older baselines unchanged).
+    if (maxMarketDownPct > 0 && marketRegime) {
+      const mPct = marketPctAt(marketRegime, barTime);
+      if (mPct != null && mPct < -maxMarketDownPct) { skip(`market ${mPct.toFixed(2)}% < -${maxMarketDownPct}%`); continue; }
+    }
+
     const dayMovePct = dayOpen > 0 ? ((bar.close - dayOpen) / dayOpen) * 100 : 0;
     if (dayMovePct > maxDayMovePct) { skip(`day move ${dayMovePct.toFixed(1)}% > ${maxDayMovePct}%`); continue; }
 
     const cumVol = bars.slice(0, i + 1).reduce((s, b) => s + (b.volume || 0), 0);
-    if (prevVol > 0 && cumVol < dayVolMult * prevVol) { skip(`day vol ${(cumVol / prevVol).toFixed(1)}x < ${dayVolMult}x`); continue; }
+    if (prevVol > 0) {
+      // Required multiple of prev-day full volume. In 'pace' mode, scale by the normal cumulative
+      // fraction done by this clock time so a stock running hot early can qualify earlier.
+      let reqMult = dayVolMult;
+      if (volMode === 'pace' && volProfile) {
+        const frac = volProfile[barTime];
+        if (frac && frac > 0) reqMult = paceVolMult * frac;
+      }
+      if (cumVol < reqMult * prevVol) { skip(`day vol ${(cumVol / prevVol).toFixed(2)}x < ${reqMult.toFixed(2)}x`); continue; }
+    }
 
     const dayHighSoFar = Math.max(...bars.slice(0, i + 1).map((b) => b.high));
     let highBarIdx = i;
@@ -236,6 +285,23 @@ export function findEntry(bars, prevDay, opts = {}) {
     if (twoBarCombinedUpPct > twoBarCombinedUpMaxPct) {
       skip(`2-bar up ${twoBarCombinedUpPct.toFixed(2)}% > ${twoBarCombinedUpMaxPct}%`);
       continue;
+    }
+
+    // intraday VWAP extension ceiling: skip breakouts entering too far above the day's VWAP
+    // (volume-weighted typical price from 09:15 through this bar). Stretched breakouts fade.
+    if (maxVwapExtPct > 0) {
+      let pvSum = 0, vSum = 0;
+      for (let k = 0; k <= i; k++) {
+        const b2 = bars[k];
+        const tp = (b2.high + b2.low + b2.close) / 3;
+        pvSum += tp * (b2.volume || 0);
+        vSum += (b2.volume || 0);
+      }
+      if (vSum > 0) {
+        const vwap = pvSum / vSum;
+        const vwapExtPct = ((bar.close - vwap) / vwap) * 100;
+        if (vwapExtPct > maxVwapExtPct) { skip(`vwap ext ${vwapExtPct.toFixed(1)}% > ${maxVwapExtPct}%`); continue; }
+      }
     }
 
     const entry = bar.close;
