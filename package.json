@@ -21,9 +21,21 @@
     "pre-market": "node scripts/preMarket.js",
     "fetch3m": "node scripts/fetchPrevDay3m.js",
     "analyze:otc": "node v2/scripts/analyzeOpenToCloseSurge.js",
+    "prereq": "node v2/scripts/loadPrereqData.js",
     "order:one": "node scripts/placeOneOrder.js",
     "live": "node scripts/liveScanner.js",
-    "positions": "node scripts/positionManager.js"
+    "positions": "node scripts/positionManager.js",
+    "v3:fetch": "node v3/scripts/fetchV3Data.js",
+    "v3:fetch:watchlist": "node v3/scripts/fetchV3Data.js --all --force",
+    "v3:fetch:universe": "node v3/scripts/fetchV3Data.js --all --force --universe",
+    "v3:backtest": "node v3/scripts/runBacktest.js",
+    "v3:scan:refresh": "node v3/scripts/swingScanner.js --refresh",
+    "v3:scan:premarket": "node v3/scripts/swingScanner.js --refresh",
+    "v3:scan:hourly": "node v3/scripts/swingScanner.js --hourly",
+    "v3:scan:exits": "node v3/scripts/swingScanner.js --exits",
+    "v3:scan:daemon": "node v3/scripts/swingScanner.js --daemon",
+    "v3:scan:universe": "node v3/scripts/swingScanner.js --hourly --universe",
+    "v3:scan:universe:daemon": "node v3/scripts/swingScanner.js --daemon --universe"
   },
   "dependencies": {
     "cors": "^2.8.5",
